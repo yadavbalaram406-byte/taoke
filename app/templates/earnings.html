@@ -27,6 +27,7 @@
 <div id="orderLoading" style="text-align:center;padding:20px;display:none;">加载中...</div>
 <div id="orderError" style="text-align:center;padding:20px;color:#e74c3c;display:none;"></div>
 
+<div class="table-wrapper">
 <table id="orderTable">
     <thead>
         <tr>
@@ -53,6 +54,7 @@
     {% endif %}
     </tbody>
 </table>
+</div>
 
 <script>
 async function loadOrders(period) {

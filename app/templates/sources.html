@@ -4,7 +4,8 @@
 
 <button class="btn btn-primary" onclick="showForm()">+ 添加商品源</button>
 
-<table style="margin-top:16px;">
+<div class="table-wrapper" style="margin-top:16px;">
+<table>
     <thead>
         <tr>
             <th>名称</th>
@@ -29,6 +30,7 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 
 {% if not sources %}
 <p class="empty">暂无商品源，点击上方按钮添加</p>

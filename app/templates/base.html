@@ -2,12 +2,21 @@
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>{{ title }} — 自动运营系统</title>
-    <link rel="stylesheet" href="/static/style.css?v=2">
+    <link rel="stylesheet" href="/static/style.css?v=3">
 </head>
 <body>
-    <aside class="sidebar">
+    <!-- 移动端顶栏（桌面端隐藏） -->
+    <div class="mobile-header">
+        <button class="hamburger-btn" onclick="toggleSidebar()" aria-label="菜单">☰</button>
+        <span class="mobile-logo">🤖 自动运营</span>
+    </div>
+
+    <!-- 侧边栏遮罩 -->
+    <div class="sidebar-overlay" onclick="toggleSidebar()"></div>
+
+    <aside class="sidebar" id="sidebar">
         <h1 class="logo">🤖 自动运营</h1>
         <nav>
             <div class="nav-section-label">自动带货</div>
@@ -27,8 +36,31 @@
             <a href="/docs" target="_blank">📖 API 文档</a>
         </div>
     </aside>
+
     <main class="content">
         {% block content %}{% endblock %}
     </main>
+
+    <script>
+    function toggleSidebar() {
+        const sidebar = document.getElementById('sidebar');
+        const overlay = document.querySelector('.sidebar-overlay');
+        const isOpen = sidebar.classList.contains('open');
+        if (isOpen) {
+            sidebar.classList.remove('open');
+            overlay.classList.remove('visible');
+        } else {
+            sidebar.classList.add('open');
+            overlay.classList.add('visible');
+        }
+    }
+    // 点击导航链接后自动关闭侧边栏
+    document.querySelectorAll('.sidebar nav a').forEach(a => {
+        a.addEventListener('click', () => {
+            document.getElementById('sidebar').classList.remove('open');
+            document.querySelector('.sidebar-overlay').classList.remove('visible');
+        });
+    });
+</script>
 </body>
 </html>

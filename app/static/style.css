@@ -1,4 +1,9 @@
-* {
+/* ============================================================
+   taoke 自动运营系统 — 样式表（桌面 + 移动端响应式）
+   ============================================================ */
+
+/* ---------- Reset & Base ---------- */
+*, *::before, *::after {
     margin: 0;
     padding: 0;
     box-sizing: border-box;
@@ -12,7 +17,66 @@ body {
     color: #2d3436;
 }
 
-/* Sidebar */
+/* ---------- Mobile Header (hidden on desktop) ---------- */
+.mobile-header {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+    height: 52px;
+    background: #1e272e;
+    color: #fff;
+    align-items: center;
+    padding: 0 12px;
+    gap: 12px;
+}
+
+.hamburger-btn {
+    width: 44px;
+    height: 44px;
+    border: none;
+    background: transparent;
+    color: #fff;
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 8px;
+    flex-shrink: 0;
+    -webkit-tap-highlight-color: transparent;
+}
+
+.hamburger-btn:active {
+    background: rgba(255,255,255,0.15);
+}
+
+.mobile-logo {
+    font-size: 17px;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+/* Sidebar overlay */
+.sidebar-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.45);
+    z-index: 90;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    pointer-events: none;
+}
+
+.sidebar-overlay.visible {
+    opacity: 1;
+    pointer-events: auto;
+}
+
+/* ---------- Sidebar ---------- */
 .sidebar {
     width: 220px;
     background: #1e272e;
@@ -24,6 +88,9 @@ body {
     top: 0;
     left: 0;
     bottom: 0;
+    z-index: 95;
+    overflow-y: auto;
+    transition: transform 0.25s ease;
 }
 
 .logo {
@@ -32,6 +99,7 @@ body {
     color: #fff;
     border-bottom: 1px solid #333;
     margin-bottom: 12px;
+    flex-shrink: 0;
 }
 
 .sidebar nav {
@@ -46,6 +114,7 @@ body {
     padding: 10px 20px;
     font-size: 14px;
     transition: background 0.2s, color 0.2s;
+    white-space: nowrap;
 }
 
 .sidebar nav a:hover,
@@ -57,6 +126,7 @@ body {
 .sidebar-footer {
     padding: 12px 20px;
     border-top: 1px solid #333;
+    flex-shrink: 0;
 }
 
 .sidebar-footer a {
@@ -65,7 +135,7 @@ body {
     font-size: 13px;
 }
 
-/* Content */
+/* ---------- Content ---------- */
 .content {
     margin-left: 220px;
     padding: 32px;
@@ -84,7 +154,7 @@ h3 {
     margin-bottom: 12px;
 }
 
-/* Stats */
+/* ---------- Stats ---------- */
 .stats-grid {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
@@ -102,7 +172,6 @@ h3 {
     transition: box-shadow 0.2s, transform 0.15s;
 }
 
-/* 可点击卡片 */
 .stat-card-link {
     display: block;
     text-decoration: none;
@@ -110,10 +179,7 @@ h3 {
     cursor: pointer;
 }
 
-/* 防止 <a> 默认蓝色污染卡片内数字颜色 */
-.stat-card-link .stat-num {
-    color: #0984e3;
-}
+.stat-card-link .stat-num { color: #0984e3; }
 .stat-card-link .stat-num.stat-num-green  { color: #27ae60; }
 .stat-card-link .stat-num.stat-num-purple { color: #8e44ad; }
 .stat-card-link .stat-num.stat-num-orange { color: #e67e22; }
@@ -138,7 +204,6 @@ h3 {
     line-height: 1.1;
 }
 
-/* 语义化颜色 — 用更高特异性选择器避免被 <a> 默认色覆盖 */
 .stat-card .stat-num-green  { color: #27ae60; }
 .stat-card .stat-num-purple { color: #8e44ad; }
 .stat-card .stat-num-orange { color: #e67e22; }
@@ -155,12 +220,9 @@ h3 {
     margin-top: 4px;
 }
 
-/* 确保链接样式不影响卡片内文字颜色 */
-a.stat-card-link:hover .stat-sub {
-    color: #999;
-}
+a.stat-card-link:hover .stat-sub { color: #999; }
 
-/* Nav section labels */
+/* ---------- Nav section labels ---------- */
 .nav-section-label {
     font-size: 15px;
     color: #74b9ff;
@@ -170,7 +232,16 @@ a.stat-card-link:hover .stat-sub {
     border-top: 1px solid #2c3e50;
 }
 
-/* Table */
+/* ---------- Table wrapper (mobile horizontal scroll) ---------- */
+.table-wrapper {
+    width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 8px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+/* ---------- Table ---------- */
 table {
     width: 100%;
     background: #fff;
@@ -178,6 +249,13 @@ table {
     overflow: hidden;
     box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     border-collapse: collapse;
+    min-width: 600px;
+}
+
+.table-wrapper table {
+    box-shadow: none;
+    border-radius: 0;
+    min-width: auto;
 }
 
 thead {
@@ -189,18 +267,19 @@ th, td {
     padding: 12px 16px;
     text-align: left;
     font-size: 14px;
+    white-space: nowrap;
 }
 
-th {
-    font-weight: 600;
-    color: #555;
+td.content-preview,
+td .content-preview {
+    white-space: nowrap;
 }
 
 tbody tr:hover {
     background: #f8f9fa;
 }
 
-/* Badge */
+/* ---------- Badge ---------- */
 .badge {
     display: inline-block;
     padding: 2px 8px;
@@ -209,24 +288,14 @@ tbody tr:hover {
     font-weight: 500;
     background: #dfe6e9;
     color: #555;
+    white-space: nowrap;
 }
 
-.badge-published {
-    background: #d4edda;
-    color: #155724;
-}
+.badge-published { background: #d4edda; color: #155724; }
+.badge-draft     { background: #fff3cd; color: #856404; }
+.badge-failed    { background: #f8d7da; color: #721c24; }
 
-.badge-draft {
-    background: #fff3cd;
-    color: #856404;
-}
-
-.badge-failed {
-    background: #f8d7da;
-    color: #721c24;
-}
-
-/* Buttons */
+/* ---------- Buttons ---------- */
 .btn {
     padding: 8px 16px;
     border: 1px solid #ddd;
@@ -235,11 +304,11 @@ tbody tr:hover {
     cursor: pointer;
     font-size: 13px;
     transition: all 0.2s;
+    white-space: nowrap;
+    -webkit-tap-highlight-color: transparent;
 }
 
-.btn:hover {
-    background: #f0f0f0;
-}
+.btn:hover { background: #f0f0f0; }
 
 .btn-primary {
     background: #0984e3;
@@ -247,9 +316,7 @@ tbody tr:hover {
     border-color: #0984e3;
 }
 
-.btn-primary:hover {
-    background: #0773c5;
-}
+.btn-primary:hover { background: #0773c5; }
 
 .btn-danger {
     color: #e74c3c;
@@ -266,7 +333,7 @@ tbody tr:hover {
     font-size: 12px;
 }
 
-/* Form */
+/* ---------- Form ---------- */
 .form-group {
     margin-bottom: 14px;
 }
@@ -289,31 +356,29 @@ tbody tr:hover {
     font-size: 14px;
 }
 
-.form-group textarea {
-    resize: vertical;
-}
+.form-group textarea { resize: vertical; }
 
 .form-actions {
     display: flex;
     justify-content: flex-end;
     gap: 8px;
     margin-top: 20px;
+    flex-wrap: wrap;
 }
 
-/* Dialog */
+/* ---------- Dialog ---------- */
 dialog {
     border: none;
     border-radius: 12px;
     padding: 24px;
     box-shadow: 0 10px 40px rgba(0,0,0,0.2);
     min-width: 420px;
+    max-width: 90vw;
 }
 
-dialog::backdrop {
-    background: rgba(0,0,0,0.4);
-}
+dialog::backdrop { background: rgba(0,0,0,0.4); }
 
-/* Product */
+/* ---------- Product ---------- */
 .product-thumb {
     width: 48px;
     height: 48px;
@@ -363,7 +428,7 @@ code {
     margin-bottom: 16px;
 }
 
-/* Product Card Grid */
+/* ---------- Product Card Grid ---------- */
 .product-grid {
     display: flex;
     flex-direction: column;
@@ -379,9 +444,7 @@ code {
     transition: box-shadow 0.2s;
 }
 
-.product-card:hover {
-    box-shadow: 0 4px 16px rgba(0,0,0,0.12);
-}
+.product-card:hover { box-shadow: 0 4px 16px rgba(0,0,0,0.12); }
 
 .card-main {
     display: flex;
@@ -432,6 +495,7 @@ code {
     align-items: center;
     gap: 8px;
     margin-bottom: 6px;
+    flex-wrap: wrap;
 }
 
 .card-price {
@@ -460,6 +524,7 @@ code {
     gap: 12px;
     font-size: 12px;
     color: #666;
+    flex-wrap: wrap;
 }
 
 /* Copy Section */
@@ -474,6 +539,7 @@ code {
     display: flex;
     gap: 4px;
     margin-bottom: 8px;
+    flex-wrap: wrap;
 }
 
 .copy-tab {
@@ -484,6 +550,7 @@ code {
     cursor: pointer;
     font-size: 12px;
     transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .copy-tab.active {
@@ -511,7 +578,7 @@ code {
     flex-wrap: wrap;
 }
 
-/* Earnings */
+/* ---------- Earnings ---------- */
 .earnings-summary {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -533,8 +600,8 @@ code {
 }
 
 .earning-num.green { color: #27ae60; }
-.earning-num.blue { color: #0984e3; }
-.earning-num.gray { color: #636e72; }
+.earning-num.blue  { color: #0984e3; }
+.earning-num.gray  { color: #636e72; }
 
 .earning-label {
     font-size: 13px;
@@ -542,10 +609,12 @@ code {
     margin-top: 4px;
 }
 
+/* Time filter */
 .time-filter {
     display: flex;
     gap: 6px;
     margin-bottom: 16px;
+    flex-wrap: wrap;
 }
 
 .time-filter button {
@@ -555,6 +624,7 @@ code {
     background: #fff;
     cursor: pointer;
     font-size: 13px;
+    -webkit-tap-highlight-color: transparent;
 }
 
 .time-filter button.active {
@@ -563,23 +633,286 @@ code {
     border-color: #0984e3;
 }
 
+/* ---------- Toast ---------- */
+#toast {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: #2d3436;
+    color: #fff;
+    padding: 10px 24px;
+    border-radius: 8px;
+    font-size: 14px;
+    z-index: 999;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    pointer-events: none;
+}
+#toast.show { opacity: 1; }
+
+
+/* ============================================================
+   RESPONSIVE — 768px (平板 / 小屏笔记本)
+   ============================================================ */
 @media (max-width: 768px) {
+
+    /* Show mobile header */
+    .mobile-header {
+        display: flex;
+    }
+
+    /* Sidebar slides in from left */
     .sidebar {
-        width: 180px;
+        transform: translateX(-100%);
+        top: 0;
+        padding-top: 20px;
     }
+    .sidebar.open {
+        transform: translateX(0);
+        box-shadow: 4px 0 20px rgba(0,0,0,0.3);
+    }
+
+    /* Overlay visible on mobile */
+    .sidebar-overlay {
+        display: block;
+    }
+
+    /* Content fills screen */
     .content {
-        margin-left: 180px;
-        padding: 20px;
+        margin-left: 0;
+        padding: 20px 16px;
+        padding-top: 68px; /* room for mobile header */
+        max-width: 100%;
     }
-    .stats-grid,
+
+    /* Stats: 2 columns */
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+    }
+    .stat-card {
+        padding: 16px 12px 12px;
+    }
+    .stat-num {
+        font-size: 26px;
+    }
+
+    /* Earnings: 1 column or 2 */
     .earnings-summary {
         grid-template-columns: repeat(2, 1fr);
     }
-    .card-main {
-        flex-direction: column;
+
+    /* Dialog full-width */
+    dialog {
+        min-width: auto;
+        width: 92vw;
+        max-width: 95vw;
+        padding: 18px;
+        margin: auto;
     }
-    .card-img {
+
+    /* Tables always scrollable */
+    table {
+        min-width: 600px;
+    }
+
+    /* Product cards */
+    .card-img,
+    .card-img-placeholder {
         width: 80px;
         height: 80px;
+    }
+    .card-title {
+        font-size: 14px;
+    }
+    .card-price {
+        font-size: 18px;
+    }
+
+    /* Headings */
+    h2 { font-size: 20px; margin-bottom: 16px; }
+
+    /* Toolbar */
+    .toolbar {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+    }
+
+    /* Content preview narrower */
+    .content-preview {
+        max-width: 160px;
+    }
+    .product-title-cell {
+        max-width: 150px;
+    }
+}
+
+
+/* ============================================================
+   RESPONSIVE — 480px (手机)
+   ============================================================ */
+@media (max-width: 480px) {
+
+    .content {
+        padding: 16px 12px;
+        padding-top: 64px;
+    }
+
+    /* Stats: single column */
+    .stats-grid {
+        grid-template-columns: 1fr;
+        gap: 10px;
+    }
+    .stat-card {
+        display: flex;
+        align-items: center;
+        text-align: left;
+        padding: 14px 16px;
+        gap: 14px;
+    }
+    .stat-icon {
+        font-size: 28px;
+        margin-bottom: 0;
+    }
+    .stat-num {
+        font-size: 28px;
+        flex-shrink: 0;
+        min-width: 48px;
+        text-align: center;
+    }
+    .stat-label {
+        flex: 1;
+    }
+    .stat-sub {
+        display: none;
+    }
+
+    /* Earnings: single column */
+    .earnings-summary {
+        grid-template-columns: 1fr;
+    }
+
+    /* Dialogs */
+    dialog {
+        width: 96vw;
+        max-width: 96vw;
+        padding: 14px;
+        border-radius: 10px;
+    }
+
+    /* Form actions: stack buttons */
+    .form-actions {
+        flex-direction: column;
+    }
+    .form-actions button {
+        width: 100%;
+    }
+
+    /* Product cards: stack image on top */
+    .card-main {
+        flex-direction: column;
+        gap: 12px;
+    }
+    .card-img,
+    .card-img-placeholder {
+        width: 100%;
+        height: auto;
+        max-height: 200px;
+        border-radius: 8px;
+    }
+    .card-meta {
+        flex-direction: column;
+        gap: 4px;
+    }
+
+    /* Copy section tabs */
+    .copy-style-tabs {
+        gap: 4px;
+    }
+    .copy-tab {
+        padding: 6px 14px;
+        font-size: 13px;
+    }
+    .copy-text {
+        font-size: 14px;
+    }
+
+    /* Card actions: stack */
+    .card-actions {
+        flex-direction: column;
+    }
+    .card-actions .btn {
+        width: 100%;
+        text-align: center;
+    }
+
+    /* Headings */
+    h2 { font-size: 18px; }
+
+    /* Time filter: smaller pills */
+    .time-filter {
+        gap: 4px;
+    }
+    .time-filter button {
+        padding: 5px 10px;
+        font-size: 12px;
+    }
+
+    /* Content preview even narrower */
+    .content-preview {
+        max-width: 120px;
+    }
+    .product-title-cell {
+        max-width: 100px;
+    }
+
+    /* Form inputs: full-width on mobile */
+    .form-group input,
+    .form-group select,
+    .form-group textarea {
+        width: 100%;
+    }
+}
+
+
+/* ============================================================
+   TOUCH OPTIMIZATION (global)
+   ============================================================ */
+
+/* Prevent iOS auto-zoom on input focus */
+@media (max-width: 768px) {
+    input, select, textarea, button {
+        font-size: 16px !important;
+    }
+
+    /* Bigger touch targets */
+    .btn {
+        padding: 10px 18px;
+    }
+    .btn-sm {
+        padding: 6px 12px;
+    }
+
+    .sidebar nav a {
+        padding: 14px 20px;
+        font-size: 15px;
+    }
+
+    th, td {
+        padding: 10px 12px;
+        font-size: 13px;
+    }
+
+    /* Remove hover states that get stuck on touch */
+    .stat-card-link:hover {
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+        transform: none;
+    }
+
+    /* Sidebar nav link active state more prominent */
+    .sidebar nav a:active {
+        background: #3d566e;
     }
 }

@@ -10,6 +10,7 @@
     <button class="btn btn-sm" onclick="quickCreate('full_cycle', '0 9,20 * * *', 'auto_2daily')">早晚各1次</button>
 </div>
 
+<div class="table-wrapper">
 <table>
     <thead>
         <tr>
@@ -49,6 +50,7 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 
 {% if not schedules %}
 <p class="empty">暂无定时任务，点击上方按钮快速创建</p>

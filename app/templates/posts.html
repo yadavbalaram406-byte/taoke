@@ -2,6 +2,7 @@
 {% block content %}
 <h2>📋 发布记录</h2>
 
+<div class="table-wrapper">
 <table>
     <thead>
         <tr>
@@ -37,6 +38,7 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 
 {% if not posts %}
 <p class="empty">暂无发布记录，去「商品管理」页面选择商品发布吧</p>

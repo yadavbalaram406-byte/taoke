@@ -31,6 +31,7 @@
 
 <h3 style="margin-top: 32px;">📝 最近发布</h3>
 {% if recent_posts %}
+<div class="table-wrapper">
 <table>
     <thead>
         <tr>
@@ -63,6 +64,7 @@
     {% endfor %}
     </tbody>
 </table>
+</div>
 {% else %}
 <p class="empty">暂无发布记录</p>
 {% endif %}
