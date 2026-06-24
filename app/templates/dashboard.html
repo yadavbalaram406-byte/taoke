@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>📊 仪表盘</h2>
+
+<div class="stats-grid">
+    <a class="stat-card stat-card-link" href="/admin/products">
+        <div class="stat-icon">📦</div>
+        <div class="stat-num">{{ stats.products }}</div>
+        <div class="stat-label">商品总数</div>
+        <div class="stat-sub">点击管理 →</div>
+    </a>
+    <a class="stat-card stat-card-link" href="/admin/sources">
+        <div class="stat-icon">🔗</div>
+        <div class="stat-num stat-num-green">{{ stats.sources }}</div>
+        <div class="stat-label">商品源</div>
+        <div class="stat-sub">点击配置 →</div>
+    </a>
+    <a class="stat-card stat-card-link" href="/admin/accounts">
+        <div class="stat-icon">👤</div>
+        <div class="stat-num stat-num-purple">{{ stats.accounts }}</div>
+        <div class="stat-label">绑定账号</div>
+        <div class="stat-sub">点击管理 →</div>
+    </a>
+    <a class="stat-card stat-card-link" href="/admin/schedules">
+        <div class="stat-icon">⏰</div>
+        <div class="stat-num stat-num-orange">{{ stats.schedules }}</div>
+        <div class="stat-label">定时任务</div>
+        <div class="stat-sub">点击配置 →</div>
+    </a>
+</div>
+
+<h3 style="margin-top: 32px;">📝 最近发布</h3>
+{% if recent_posts %}
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>平台</th>
+            <th>内容</th>
+            <th>状态</th>
+            <th>时间</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for post in recent_posts %}
+        <tr>
+            <td>{{ post.id }}</td>
+            <td>{{ post.platform }}</td>
+            <td class="content-preview" title="{{ post.content }}">{{ post.content[:80] }}{% if post.content|length > 80 %}...{% endif %}</td>
+            <td>
+                {% if post.status == 'published' %}
+                    <span class="badge badge-published">✅ 已发布</span>
+                {% elif post.status == 'failed' %}
+                    <span class="badge badge-failed">❌ 失败</span>
+                {% elif post.status == 'draft' %}
+                    <span class="badge badge-draft">📝 草稿</span>
+                {% else %}
+                    <span class="badge">{{ post.status }}</span>
+                {% endif %}
+            </td>
+            <td>{{ to_local(post.created_at).strftime('%m-%d %H:%M') if post.created_at else '-' }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+{% else %}
+<p class="empty">暂无发布记录</p>
+{% endif %}
+{% endblock %}

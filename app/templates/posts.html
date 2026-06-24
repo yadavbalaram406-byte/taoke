@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>📋 发布记录</h2>
+
+<table>
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>平台</th>
+            <th>内容</th>
+            <th>状态</th>
+            <th>外部链接</th>
+            <th>发布时间</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for p in posts %}
+        <tr>
+            <td>{{ p.id }}</td>
+            <td><span class="badge">{{ p.platform }}</span></td>
+            <td class="content-preview">{{ p.content[:100] }}{% if p.content|length > 100 %}...{% endif %}</td>
+            <td>
+                <span class="badge badge-{{ p.status }}">{{ p.status }}</span>
+                {% if p.error_message %}
+                <div style="font-size:11px;color:#e74c3c;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ p.error_message }}">{{ p.error_message[:60] }}</div>
+                {% endif %}
+            </td>
+            <td>
+                {% if p.external_url %}
+                <a href="{{ p.external_url }}" target="_blank" style="font-size:12px;">查看 →</a>
+                {% else %}
+                <span style="color:#999;">-</span>
+                {% endif %}
+            </td>
+            <td>{{ to_local(p.published_at).strftime('%Y-%m-%d %H:%M') if p.published_at else to_local(p.created_at).strftime('%m-%d %H:%M') }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if not posts %}
+<p class="empty">暂无发布记录，去「商品管理」页面选择商品发布吧</p>
+{% endif %}
+{% endblock %}

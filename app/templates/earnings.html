@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>💰 收益看板</h2>
+
+<div class="earnings-summary">
+    <div class="earning-card">
+        <div class="earning-num blue">¥{{ "%.2f" % summary.estimated }}</div>
+        <div class="earning-label">预估收入</div>
+    </div>
+    <div class="earning-card">
+        <div class="earning-num green">¥{{ "%.2f" % summary.settled }}</div>
+        <div class="earning-label">已结算</div>
+    </div>
+    <div class="earning-card">
+        <div class="earning-num gray">{{ summary.order_count }}</div>
+        <div class="earning-label">订单数</div>
+    </div>
+</div>
+
+<div class="time-filter">
+    <button class="active" onclick="loadOrders('today')">今天</button>
+    <button onclick="loadOrders('yesterday')">昨天</button>
+    <button onclick="loadOrders('7days')">近7天</button>
+    <button onclick="loadOrders('30days')">近30天</button>
+</div>
+
+<div id="orderLoading" style="text-align:center;padding:20px;display:none;">加载中...</div>
+<div id="orderError" style="text-align:center;padding:20px;color:#e74c3c;display:none;"></div>
+
+<table id="orderTable">
+    <thead>
+        <tr>
+            <th>商品</th>
+            <th>预估收入</th>
+            <th>结算收入</th>
+            <th>状态</th>
+            <th>时间</th>
+        </tr>
+    </thead>
+    <tbody id="orderBody">
+    {% if orders %}
+    {% for o in orders %}
+        <tr>
+            <td class="content-preview" style="max-width:300px;">{{ o.item_title }}</td>
+            <td>¥{{ "%.2f" % o.pay_fee }}</td>
+            <td>¥{{ "%.2f" % o.settle_fee }}</td>
+            <td><span class="badge {{ 'badge-published' if o.status == 14 or o.status == 3 else 'badge-draft' if o.status == 12 else 'badge-failed' }}">{{ o.status_label }}</span></td>
+            <td>{{ o.create_time[:10] if o.create_time else '-' }}</td>
+        </tr>
+    {% endfor %}
+    {% else %}
+        <tr><td colspan="5" class="empty">暂无订单数据。使用大淘客转链API 3天后可查询订单。</td></tr>
+    {% endif %}
+    </tbody>
+</table>
+
+<script>
+async function loadOrders(period) {
+    // Update active button
+    document.querySelectorAll('.time-filter button').forEach(b => b.classList.remove('active'));
+    event.target.classList.add('active');
+
+    document.getElementById('orderLoading').style.display = 'block';
+    document.getElementById('orderError').style.display = 'none';
+
+    try {
+        const resp = await fetch('/api/earnings/orders?period=' + period);
+        const data = await resp.json();
+
+        if (!data.success) {
+            document.getElementById('orderError').textContent = data.error || '查询失败';
+            document.getElementById('orderError').style.display = 'block';
+            document.getElementById('orderLoading').style.display = 'none';
+            return;
+        }
+
+        const tbody = document.getElementById('orderBody');
+        if (data.orders.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="empty">该时间段暂无订单</td></tr>';
+        } else {
+            const labels = {12:'已付款',13:'已失效',14:'已收货',3:'已结算'};
+            const badgeCls = {14:'badge-published',3:'badge-published',12:'badge-draft',13:'badge-failed'};
+            tbody.innerHTML = data.orders.map(o =>
+                `<tr>
+                    <td class="content-preview" style="max-width:300px;">${o.item_title}</td>
+                    <td>¥${o.pay_fee.toFixed(2)}</td>
+                    <td>¥${o.settle_fee.toFixed(2)}</td>
+                    <td><span class="badge ${badgeCls[o.status] || ''}">${labels[o.status] || o.status_label}</span></td>
+                    <td>${(o.create_time || '').slice(0,10)}</td>
+                </tr>`
+            ).join('');
+        }
+
+        // Update summary cards
+        if (data.summary) {
+            document.querySelectorAll('.earning-num')[0].textContent = '¥' + data.summary.total_estimated.toFixed(2);
+            document.querySelectorAll('.earning-num')[1].textContent = '¥' + data.summary.total_settled.toFixed(2);
+            document.querySelectorAll('.earning-num')[2].textContent = data.summary.order_count;
+        }
+    } catch(e) {
+        document.getElementById('orderError').textContent = '加载失败: ' + e.message;
+        document.getElementById('orderError').style.display = 'block';
+    }
+    document.getElementById('orderLoading').style.display = 'none';
+}
+</script>
+{% endblock %}

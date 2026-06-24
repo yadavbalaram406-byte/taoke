@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>📋 养号发布记录</h2>
+
+<div class="toolbar" style="display:flex;align-items:center;gap:8px;">
+    <a href="/admin/nurture" class="btn btn-sm" style="text-decoration:none;">← 返回自动养号</a>
+    <button class="btn btn-sm btn-primary" onclick="refreshViews()">🔄 刷新阅读量</button>
+    <span id="refresh-status" style="font-size:12px;color:#888;"></span>
+</div>
+
+<!-- 每日统计 -->
+<div class="earnings-summary" style="margin-bottom:20px;">
+    <div class="earning-card">
+        <div class="earning-num blue">{{ daily_posts }}</div>
+        <div class="earning-label">今日发布</div>
+    </div>
+    <div class="earning-card">
+        <div class="earning-num green">{{ daily_views }}</div>
+        <div class="earning-label">今日阅读量</div>
+    </div>
+</div>
+
+<table id="records-table">
+    <thead>
+        <tr>
+            <th>#</th>
+            <th>参与话题</th>
+            <th>文案预览</th>
+            <th>阅读</th>
+            <th>配图</th>
+            <th>状态</th>
+            <th>时间</th>
+        </tr>
+    </thead>
+    <tbody id="records-body">
+    {% for r in records %}
+        <tr>
+            <td>{{ r.id }}</td>
+            <td><strong>{{ r.topic_name }}</strong></td>
+            <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="{{ r.content }}">
+                {{ r.content[:50] }}{% if r.content|length > 50 %}...{% endif %}
+            </td>
+            <td>{{ r.views }}</td>
+            <td>
+                {% if r.image_local %}
+                <span title="{{ r.image_local }}">🖼️</span>
+                {% else %}
+                —
+                {% endif %}
+            </td>
+            <td>
+                {% if r.status == 'published' %}
+                <span class="badge badge-published">✅ 已发布</span>
+                {% elif r.status == 'failed' %}
+                <span class="badge badge-failed" title="{{ r.error_message }}">❌ 失败</span>
+                {% elif r.status == 'draft' %}
+                <span class="badge badge-draft">📝 草稿</span>
+                {% else %}
+                <span class="badge">{{ r.status }}</span>
+                {% endif %}
+            </td>
+            <td>{{ to_local(r.published_at).strftime('%m-%d %H:%M') if r.published_at else to_local(r.created_at).strftime('%m-%d %H:%M') }}</td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+<!-- 分页 -->
+<div id="pagination" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:20px;">
+    <button class="btn btn-sm" id="btn-prev" onclick="goPage({{ page }} - 1)" {% if page <= 1 %}disabled{% endif %}>上一页</button>
+    <span id="page-info" style="font-size:13px;color:#666;">第 {{ page }} / {{ total_pages }} 页（共 {{ total }} 条）</span>
+    <button class="btn btn-sm" id="btn-next" onclick="goPage({{ page }} + 1)" {% if page >= total_pages %}disabled{% endif %}>下一页</button>
+</div>
+
+{% if not records %}
+<p class="empty">暂无养号记录</p>
+{% endif %}
+
+<script>
+async function refreshViews() {
+    const btn = event.target;
+    const status = document.getElementById('refresh-status');
+    btn.disabled = true; btn.textContent = '刷新中...'; status.textContent = '正在从微博抓取阅读量...';
+    try {
+        const resp = await fetch('/api/nurture/update-views', {method: 'POST'});
+        const data = await resp.json();
+        status.textContent = `完成，更新 ${data.updated} 条`;
+        setTimeout(() => location.reload(), 1000);
+    } catch(e) {
+        status.textContent = '刷新失败: ' + e.message;
+        btn.disabled = false; btn.textContent = '🔄 刷新阅读量';
+    }
+}
+
+let currentPage = {{ page }};
+const totalPages = {{ total_pages }};
+
+async function goPage(page) {
+    if (page < 1 || page > totalPages) return;
+
+    const resp = await fetch(`/api/nurture/records?page=${page}&page_size=20`);
+    const data = await resp.json();
+
+    // 渲染表格
+    const tbody = document.getElementById('records-body');
+    tbody.innerHTML = data.items.map(r => `
+        <tr>
+            <td>${r.id}</td>
+            <td><strong>${r.topic_name}</strong></td>
+            <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${escapeHtml(r.content)}">
+                ${r.content.slice(0, 50)}${r.content.length > 50 ? '...' : ''}
+            </td>
+            <td>${r.views}</td>
+            <td>${r.image_local ? '<span title="' + r.image_local + '">🖼️</span>' : '—'}</td>
+            <td>${statusBadge(r)}</td>
+            <td>${formatTime(r.published_at || r.created_at)}</td>
+        </tr>
+    `).join('');
+
+    // 更新分页
+    currentPage = data.page;
+    document.getElementById('page-info').textContent = `第 ${data.page} / ${data.total_pages} 页（共 ${data.total} 条）`;
+    document.getElementById('btn-prev').disabled = data.page <= 1;
+    document.getElementById('btn-next').disabled = data.page >= data.total_pages;
+}
+
+function statusBadge(r) {
+    if (r.status === 'published') return '<span class="badge badge-published">✅ 已发布</span>';
+    if (r.status === 'failed') return `<span class="badge badge-failed" title="${escapeHtml(r.error_message)}">❌ 失败</span>`;
+    if (r.status === 'draft') return '<span class="badge badge-draft">📝 草稿</span>';
+    return '<span class="badge">' + r.status + '</span>';
+}
+
+function formatTime(t) {
+    if (!t) return '-';
+    // ISO format → local time
+    const d = new Date(t + 'Z');
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    const hh = String(d.getHours()).padStart(2, '0');
+    const min = String(d.getMinutes()).padStart(2, '0');
+    return `${mm}-${dd} ${hh}:${min}`;
+}
+
+function escapeHtml(s) {
+    if (!s) return '';
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+</script>
+{% endblock %}

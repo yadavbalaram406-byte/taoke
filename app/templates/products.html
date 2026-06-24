@@ -1,0 +1,317 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>📦 选品库</h2>
+
+<div class="toolbar">
+    <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+        <form method="get" style="display:flex;gap:8px;align-items:center;">
+            <select name="source">
+                <option value="">全部来源</option>
+                {% for s in sources %}
+                <option value="{{ s.platform }}" {% if request.query_params.get('source') == s.platform %}selected{% endif %}>{{ s.name }}</option>
+                {% endfor %}
+            </select>
+            <button type="submit" class="btn btn-sm">筛选</button>
+        </form>
+        <button class="btn btn-primary btn-sm" onclick="fetchNow()">🔄 立即抓取</button>
+        <span style="font-size:12px;color:#888;" id="productCount">共 {{ products|length }} 件</span>
+    </div>
+</div>
+
+{% if not products %}
+<p class="empty">暂无商品，请先<a href="/admin/sources">配置商品源</a>并点击「立即抓取」</p>
+{% endif %}
+
+<div class="product-grid">
+{% for p in products %}
+<div class="product-card" id="card-{{ p.id }}">
+    <div class="card-main">
+        {% if p.image_url %}
+        <img src="{{ p.image_url }}" alt="" class="card-img" loading="lazy" onerror="this.style.display='none'">
+        {% else %}
+        <div class="card-img-placeholder"></div>
+        {% endif %}
+        <div class="card-info">
+            <div class="card-title">{{ p.short_title or p.title[:60] }}</div>
+            <div class="card-shop">{{ p.shop_name }}</div>
+            <div class="card-price-row">
+                <span class="card-price">¥{{ "%.2f" % p.coupon_price }}</span>
+                <span class="card-origin">原价 ¥{{ "%.2f" % p.price }}</span>
+                {% if p.coupon_amount > 0 %}
+                <span class="card-coupon">券¥{{ "%.0f" % p.coupon_amount }}</span>
+                {% endif %}
+            </div>
+            <div class="card-meta">
+                <span>💰 佣金 ¥{{ "%.2f" % p.commission }} ({{ "%.0f" % p.commission_rate }}%)</span>
+                <span>📈 月销 {{ p.sales_volume }}</span>
+                <span>⭐ {{ "%.1f" % p.score }}</span>
+            </div>
+        </div>
+    </div>
+
+    <!-- 文案区域 -->
+    <div class="card-copy-section">
+        <div class="copy-style-tabs">
+            <button class="copy-tab active" onclick="switchCopyStyle({{ p.id }}, 'discount', this)">优惠型</button>
+            <button class="copy-tab" onclick="switchCopyStyle({{ p.id }}, 'content', this)">种草型</button>
+            <button class="copy-tab" onclick="switchCopyStyle({{ p.id }}, 'ai', this)">AI</button>
+        </div>
+        <textarea class="copy-text" id="copyText-{{ p.id }}" rows="3" readonly></textarea>
+    </div>
+
+    <!-- 操作按钮 -->
+    <div class="card-actions">
+        <button class="btn btn-sm" onclick="copyField('copyText-{{ p.id }}')">📋 文案</button>
+        {% if p.cps_link %}
+        <button class="btn btn-sm" onclick="copyStr('{{ p.cps_link | e }}')">🔗 CPS链接</button>
+        {% else %}
+        <button class="btn btn-sm" onclick="convertLink({{ p.id }})" id="btn-convert-{{ p.id }}">🔗 转链</button>
+        {% endif %}
+        {% if p.tao_password %}
+        <button class="btn btn-sm" onclick="copyStr('{{ p.tao_password | e }}')">📱 淘口令</button>
+        {% endif %}
+        <button class="btn btn-sm btn-primary" onclick="copyAll({{ p.id }})">📋 全部复制</button>
+        <button class="btn btn-sm" onclick="toggleSelected({{ p.id }})" id="btn-select-{{ p.id }}">
+            {% if p.status == 'selected' %}⭐ 已收藏{% else %}☆ 收藏{% endif %}
+        </button>
+        <button class="btn btn-sm" onclick="openPublish({{ p.id }})" style="background:#ff8200;color:#fff;border-color:#ff8200;">📤 发布</button>
+    </div>
+
+    <!-- 商品数据 (JS用) -->
+    <script type="application/json" class="product-data">{{ {
+        "id": p.id,
+        "title": p.title,
+        "short_title": p.short_title or p.title,
+        "price": "%.2f" % p.price,
+        "coupon_price": "%.2f" % p.coupon_price,
+        "coupon_amount": "%.0f" % p.coupon_amount,
+        "commission": "%.2f" % p.commission,
+        "commission_rate": "%.0f" % p.commission_rate,
+        "sales_volume": p.sales_volume,
+        "shop_name": p.shop_name,
+        "description": (p.description or "")[:200],
+        "cps_link": p.cps_link or "",
+        "tao_password": p.tao_password or "",
+        "coupon_link": p.coupon_link or "",
+    } | tojson }}</script>
+</div>
+{% endfor %}
+</div>
+
+<div id="aiLoading" style="display:none;text-align:center;padding:20px;position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,0.3);z-index:999;">
+    <p>🤖 AI 正在生成文案...</p>
+</div>
+
+<script>
+// ===== 文案模板 =====
+function buildCopy(data, style) {
+    const discountTpls = [
+        `🔥【${data.short_title}】券后仅需¥${data.coupon_price}！原价¥${data.price}，立省¥${data.coupon_amount}。${data.shop_name}爆款，月销${data.sales_volume}+！\n\n${data.tao_password ? '📱 ' + data.tao_password + '\n' : ''}${data.cps_link ? '🔗 ' + data.cps_link + '\n' : ''}${!data.tao_password && !data.cps_link ? data.coupon_link : ''}#好物推荐#`,
+    ];
+    const contentTpls = [
+        `📦 种草 | ${data.short_title}\n\n${data.description || ''}\n\n💰 券后价 ¥${data.coupon_price} | 原价 ¥${data.price}\n🏪 ${data.shop_name} | 月销 ${data.sales_volume}+\n${data.tao_password ? '\n📱 ' + data.tao_password : ''}${data.cps_link ? '\n🔗 ' + data.cps_link : ''}${!data.tao_password && !data.cps_link ? '\n' + data.coupon_link : ''}\n\n#好物分享# #种草#`,
+    ];
+
+    const tpls = style === 'content' ? contentTpls : discountTpls;
+    return tpls[Math.floor(Math.random() * tpls.length)];
+}
+
+// ===== 页面初始化：填充所有文案 =====
+document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('.product-data').forEach(el => {
+        const data = JSON.parse(el.textContent);
+        const textarea = document.getElementById('copyText-' + data.id);
+        if (textarea) {
+            textarea.value = buildCopy(data, 'discount');
+        }
+    });
+});
+
+// ===== 文案切换 =====
+function switchCopyStyle(productId, style, btn) {
+    btn.parentElement.querySelectorAll('.copy-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    const textarea = document.getElementById('copyText-' + productId);
+    const dataEl = document.querySelector('#card-' + productId + ' .product-data');
+    const data = JSON.parse(dataEl.textContent);
+
+    if (style === 'ai') {
+        generateAICopy(productId, textarea);
+        return;
+    }
+
+    textarea.value = buildCopy(data, style);
+    textarea.style.background = '#fff';
+}
+
+async function generateAICopy(productId, textarea) {
+    document.getElementById('aiLoading').style.display = 'block';
+    textarea.value = 'AI 生成中...';
+    textarea.style.background = '#f0f0f0';
+    try {
+        const resp = await fetch('/api/publish/preview', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({product_id: productId, copy_style: 'ai'})
+        });
+        const data = await resp.json();
+        textarea.value = data.content;
+        textarea.style.background = '#fff';
+    } catch(e) {
+        textarea.value = 'AI生成失败: ' + e.message;
+        textarea.style.background = '#fff3cd';
+    }
+    document.getElementById('aiLoading').style.display = 'none';
+}
+
+// ===== 复制 =====
+function copyField(textareaId) {
+    copyStr(document.getElementById(textareaId).value);
+}
+
+function copyStr(text) {
+    navigator.clipboard.writeText(text).then(() => showToast('已复制 ✅')).catch(() => {
+        const ta = document.createElement('textarea');
+        ta.value = text; ta.style.position = 'fixed'; ta.style.left = '-9999px';
+        document.body.appendChild(ta); ta.select();
+        document.execCommand('copy'); document.body.removeChild(ta);
+        showToast('已复制 ✅');
+    });
+}
+
+function copyAll(productId) {
+    const dataEl = document.querySelector('#card-' + productId + ' .product-data');
+    const data = JSON.parse(dataEl.textContent);
+    const textarea = document.getElementById('copyText-' + productId);
+    let full = textarea.value;
+    if (data.cps_link && !full.includes(data.cps_link)) full += '\n\n🔗 ' + data.cps_link;
+    if (data.tao_password && !full.includes(data.tao_password)) full += '\n📱 ' + data.tao_password;
+    copyStr(full);
+}
+
+// ===== 转链 =====
+async function convertLink(productId) {
+    const btn = document.getElementById('btn-convert-' + productId);
+    if (!btn) return;
+    btn.disabled = true; btn.textContent = '转链中...';
+    try {
+        const resp = await fetch('/api/products/' + productId + '/convert', {method: 'POST'});
+        if (resp.ok) { showToast('转链成功 ✅'); setTimeout(() => location.reload(), 500); }
+        else { const e = await resp.json(); showToast('转链失败: ' + (e.detail || '?')); }
+    } catch(e) { showToast('转链失败: ' + e.message); }
+    btn.disabled = false; btn.textContent = '🔗 转链';
+}
+
+// ===== 收藏切换 =====
+async function toggleSelected(productId) {
+    const btn = document.getElementById('btn-select-' + productId);
+    const isSelected = btn.textContent.includes('已收藏');
+    const resp = await fetch('/api/products/' + productId, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({status: isSelected ? 'active' : 'selected'})
+    });
+    if (resp.ok) {
+        btn.innerHTML = isSelected ? '☆ 收藏' : '⭐ 已收藏';
+        showToast(isSelected ? '已移出选品库' : '已收藏 ⭐');
+    }
+}
+
+function showToast(msg) {
+    let t = document.getElementById('toast');
+    if (!t) { t = document.createElement('div'); t.id = 'toast'; t.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1e272e;color:#fff;padding:10px 24px;border-radius:20px;font-size:14px;z-index:9999;transition:opacity 0.3s;'; document.body.appendChild(t); }
+    t.textContent = msg; t.style.opacity = '1';
+    clearTimeout(t._timer); t._timer = setTimeout(() => t.style.opacity = '0', 1500);
+}
+
+async function fetchNow() {
+    const btn = event.target; btn.disabled = true; btn.textContent = '抓取中...';
+    try {
+        const resp = await fetch('/api/fetch/trigger', {method: 'POST'});
+        if (resp.ok) { const d = await resp.json(); showToast(d.message); setTimeout(() => location.reload(), 1500); }
+        else showToast('抓取失败');
+    } catch(e) { showToast('抓取失败: ' + e.message); }
+    btn.disabled = false; btn.textContent = '🔄 立即抓取';
+}
+
+// ===== 发布 =====
+let pubProductId = 0;
+let pubAccounts = [];
+
+async function openPublish(productId) {
+    pubProductId = productId;
+    // Load accounts
+    try {
+        const resp = await fetch('/api/accounts');
+        pubAccounts = (await resp.json()).filter(a => a.platform === 'weibo' && a.is_active);
+        const sel = document.getElementById('pubAccountSelect');
+        sel.innerHTML = pubAccounts.length > 0
+            ? pubAccounts.map(a => `<option value="${a.id}">${a.name} (UID:${a.uid})</option>`).join('')
+            : '<option value="">没有可用的微博账号，请先扫码登录</option>';
+    } catch(e) {
+        document.getElementById('pubAccountSelect').innerHTML = '<option value="">加载失败</option>';
+    }
+    // Fill current copy text into preview
+    const textarea = document.getElementById('copyText-' + productId);
+    document.getElementById('pubContent').value = textarea.value;
+    document.getElementById('publishModal').showModal();
+}
+
+async function doPublish() {
+    const accountId = document.getElementById('pubAccountSelect').value;
+    if (!accountId) { alert('请选择微博账号'); return; }
+
+    const style = document.getElementById('pubStyle').value;
+    const btn = document.getElementById('btnDoPublish');
+    btn.disabled = true; btn.textContent = '发布中...';
+
+    try {
+        const resp = await fetch('/api/publish', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                product_id: pubProductId,
+                account_id: parseInt(accountId),
+                copy_style: style
+            })
+        });
+        const data = await resp.json();
+        if (resp.ok) {
+            showToast('发布成功！🎉');
+            document.getElementById('publishModal').close();
+        } else {
+            alert('发布失败: ' + (data.detail || '未知错误'));
+        }
+    } catch(e) {
+        alert('发布失败: ' + e.message);
+    }
+    btn.disabled = false; btn.textContent = '🚀 确认发布';
+}
+</script>
+
+<!-- 发布弹窗 -->
+<dialog id="publishModal">
+    <h3>📤 发布到微博</h3>
+    <div class="form-group">
+        <label>选择账号</label>
+        <select id="pubAccountSelect"><option value="">加载中...</option></select>
+    </div>
+    <div class="form-group">
+        <label>文案风格</label>
+        <select id="pubStyle">
+            <option value="discount">优惠信息型</option>
+            <option value="content">内容推荐型</option>
+        </select>
+    </div>
+    <div class="form-group">
+        <label>发布内容</label>
+        <textarea id="pubContent" rows="6" style="font-size:14px;"></textarea>
+    </div>
+    <div class="form-actions">
+        <button class="btn" onclick="document.getElementById('publishModal').close()">取消</button>
+        <button class="btn btn-primary" id="btnDoPublish" onclick="doPublish()">🚀 确认发布</button>
+    </div>
+</dialog>
+
+{% endblock %}

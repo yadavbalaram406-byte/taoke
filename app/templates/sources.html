@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>🔗 商品源配置</h2>
+
+<button class="btn btn-primary" onclick="showForm()">+ 添加商品源</button>
+
+<table style="margin-top:16px;">
+    <thead>
+        <tr>
+            <th>名称</th>
+            <th>平台</th>
+            <th>状态</th>
+            <th>最近抓取</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for s in sources %}
+        <tr>
+            <td>{{ s.name }}</td>
+            <td><span class="badge">{{ s.platform }}</span></td>
+            <td><span class="badge badge-{{ 'published' if s.is_active else 'failed' }}">{{ '启用' if s.is_active else '停用' }}</span></td>
+            <td>{{ to_local(s.last_fetch_at).strftime('%m-%d %H:%M') if s.last_fetch_at else '从未' }}</td>
+            <td>
+                <button class="btn btn-sm" onclick="editSource({{ s.id }})">编辑</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteSource({{ s.id }})">删除</button>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if not sources %}
+<p class="empty">暂无商品源，点击上方按钮添加</p>
+{% endif %}
+
+<!-- 添加/编辑弹窗 -->
+<dialog id="sourceDialog">
+    <form id="sourceForm" method="dialog">
+        <h3 id="dialogTitle">添加商品源</h3>
+        <input type="hidden" name="id" id="sourceId">
+        <div class="form-group">
+            <label>名称</label>
+            <input type="text" name="name" required placeholder="例如：我的大淘客">
+        </div>
+        <div class="form-group">
+            <label>平台</label>
+            <select name="platform" required>
+                <option value="dataoke">大淘客</option>
+                <option value="taobao">淘宝联盟</option>
+                <option value="jd">京东联盟</option>
+                <option value="pdd">多多客</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>App Key</label>
+            <input type="text" name="app_key" placeholder="API Key">
+        </div>
+        <div class="form-group">
+            <label>App Secret</label>
+            <input type="password" name="app_secret" placeholder="API Secret">
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn" onclick="document.getElementById('sourceDialog').close()">取消</button>
+            <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+    </form>
+</dialog>
+
+<script>
+function showForm() {
+    document.getElementById('dialogTitle').textContent = '添加商品源';
+    document.getElementById('sourceForm').reset();
+    document.getElementById('sourceId').value = '';
+    document.getElementById('sourceDialog').showModal();
+}
+
+async function editSource(id) {
+    const resp = await fetch('/api/sources/' + id);
+    const s = await resp.json();
+    document.getElementById('dialogTitle').textContent = '编辑商品源';
+    document.getElementById('sourceId').value = s.id;
+    document.querySelector('[name="name"]').value = s.name;
+    document.querySelector('[name="platform"]').value = s.platform;
+    document.querySelector('[name="app_key"]').value = s.app_key;
+    document.querySelector('[name="app_secret"]').value = s.app_secret;
+    document.getElementById('sourceDialog').showModal();
+}
+
+async function deleteSource(id) {
+    if (!confirm('确定删除？')) return;
+    await fetch('/api/sources/' + id, { method: 'DELETE' });
+    location.reload();
+}
+
+document.getElementById('sourceForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const data = Object.fromEntries(new FormData(form));
+    const isEdit = data.id;
+    const url = isEdit ? '/api/sources/' + data.id : '/api/sources';
+    const method = isEdit ? 'PUT' : 'POST';
+    delete data.id;
+    const resp = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+    if (resp.ok) {
+        document.getElementById('sourceDialog').close();
+        location.reload();
+    } else {
+        alert('保存失败');
+    }
+});
+</script>
+{% endblock %}

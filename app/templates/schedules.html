@@ -1,0 +1,219 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>⏰ 定时任务</h2>
+
+<div class="toolbar">
+    <button class="btn btn-primary" onclick="showForm()">+ 创建任务</button>
+    <span style="font-size:12px;color:#888;margin-left:10px;">快速预设：</span>
+    <button class="btn btn-sm" onclick="quickCreate('full_cycle', '0 */6 * * *', 'auto_6h')">每6小时</button>
+    <button class="btn btn-sm" onclick="quickCreate('full_cycle', '0 9,12,16,20 * * *', 'auto_4daily')">每天4次</button>
+    <button class="btn btn-sm" onclick="quickCreate('full_cycle', '0 9,20 * * *', 'auto_2daily')">早晚各1次</button>
+</div>
+
+<table>
+    <thead>
+        <tr>
+            <th>名称</th>
+            <th>类型</th>
+            <th>执行计划</th>
+            <th>发前刷新</th>
+            <th>账号</th>
+            <th>上次执行</th>
+            <th>状态</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for s in schedules %}
+        <tr>
+            <td>{{ s.name }}</td>
+            <td><span class="badge">{{ '抓取+发布' if s.task_type == 'full_cycle' else '仅发布' if s.task_type == 'publish_post' else '仅抓取' }}</span></td>
+            <td><code>{{ s.cron_expression }}</code>
+                <div style="font-size:11px;color:#888;">{{ cron_desc(s.cron_expression) }}</div>
+            </td>
+            <td>{{ '✅' if s.refresh_before_post else '❌' }}</td>
+            <td>#{{ s.account_id or '-' }}</td>
+            <td>{{ to_local(s.last_run_at).strftime('%m-%d %H:%M') if s.last_run_at else '从未' }}</td>
+            <td>
+                <span class="badge badge-{{ 'published' if s.is_active else 'failed' }}" style="cursor:pointer"
+                      onclick="toggleActive({{ s.id }}, {{ 'true' if s.is_active else 'false' }})">
+                    {{ '▶ 运行中' if s.is_active else '⏸ 已暂停' }}
+                </span>
+            </td>
+            <td>
+                <button class="btn btn-sm" onclick="runNow({{ s.id }})">▶ 立即执行</button>
+                <button class="btn btn-sm" onclick="editSchedule({{ s.id }})">编辑</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteSchedule({{ s.id }})">删除</button>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if not schedules %}
+<p class="empty">暂无定时任务，点击上方按钮快速创建</p>
+{% endif %}
+
+<dialog id="scheduleDialog">
+    <form id="scheduleForm" method="dialog">
+        <h3 id="dialogTitle">创建任务</h3>
+        <input type="hidden" name="id" id="scheduleId">
+        <div class="form-group">
+            <label>任务名称</label>
+            <input type="text" name="name" required placeholder="例如：每天晚上8点发微博">
+        </div>
+        <div class="form-group">
+            <label>任务类型</label>
+            <select name="task_type" required>
+                <option value="full_cycle">完整周期（抓取最新 + 发布）</option>
+                <option value="publish_post">仅发布（不抓取新品）</option>
+                <option value="fetch_products">仅抓取（不发布）</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Cron 表达式</label>
+            <input type="text" name="cron_expression" required placeholder="分 时 日 月 周，如 0 20 * * *">
+            <small style="color:#888;">常用：<code>0 */6 * * *</code> 每6小时 | <code>0 9,20 * * *</code> 早9晚8</small>
+        </div>
+        <div class="form-group">
+            <label>发布账号</label>
+            <select name="account_id">
+                <option value="">— 选择账号 —</option>
+                {% for a in accounts %}
+                <option value="{{ a.id }}">{{ a.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="form-group">
+            <label>
+                <input type="checkbox" name="refresh_before_post" value="true" checked style="width:auto;">
+                发布前自动刷新商品库（推荐开启，避免下架品）
+            </label>
+        </div>
+        <div class="form-group">
+            <label>每次发布数量</label>
+            <select name="max_products_per_run">
+                <option value="1">1条</option>
+                <option value="2">2条</option>
+                <option value="3">3条</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>文案风格</label>
+            <select name="copy_style">
+                <option value="discount">优惠信息型</option>
+                <option value="content">内容推荐型</option>
+            </select>
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn" onclick="document.getElementById('scheduleDialog').close()">取消</button>
+            <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+    </form>
+</dialog>
+
+<script>
+// ===== 快速创建 =====
+async function quickCreate(taskType, cron, preset) {
+    const names = {
+        auto_6h: '每6小时自动发布',
+        auto_4daily: '每天4次自动发布',
+        auto_2daily: '早晚各1次自动发布',
+    };
+    const hasAccounts = {{ accounts|length }} > 0;
+    if (!hasAccounts) {
+        alert('请先在「账号管理」中扫码登录微博账号');
+        return;
+    }
+    const accountId = {{ (accounts[0].id if accounts else 0) }};
+    const resp = await fetch('/api/schedules', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            name: names[preset],
+            task_type: taskType,
+            cron_expression: cron,
+            account_id: accountId,
+            copy_style: 'discount',
+            max_products_per_run: 1,
+            refresh_before_post: true,
+        })
+    });
+    if (resp.ok) { alert('任务已创建 ✅'); location.reload(); }
+    else { alert('创建失败'); }
+}
+
+// ===== 暂停/启用 =====
+async function toggleActive(id, current) {
+    const resp = await fetch('/api/schedules/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({is_active: !current})
+    });
+    if (resp.ok) location.reload();
+}
+
+// ===== 立即执行 =====
+async function runNow(id) {
+    if (!confirm('确定立即执行此任务？')) return;
+    const btn = event.target; btn.disabled = true; btn.textContent = '执行中...';
+    try {
+        await fetch('/api/schedules/' + id + '/run', {method: 'POST'});
+        alert('执行完成');
+        location.reload();
+    } catch(e) { alert('执行失败: ' + e.message); }
+    btn.disabled = false; btn.textContent = '▶ 立即执行';
+}
+
+function showForm() {
+    document.getElementById('dialogTitle').textContent = '创建任务';
+    document.getElementById('scheduleForm').reset();
+    document.getElementById('scheduleId').value = '';
+    document.querySelector('[name="max_products_per_run"]').value = '1';
+    document.querySelector('[name="refresh_before_post"]').checked = true;
+    document.getElementById('scheduleDialog').showModal();
+}
+
+async function editSchedule(id) {
+    const resp = await fetch('/api/schedules/' + id);
+    const s = await resp.json();
+    document.getElementById('dialogTitle').textContent = '编辑任务';
+    document.getElementById('scheduleId').value = s.id;
+    document.querySelector('[name="name"]').value = s.name;
+    document.querySelector('[name="task_type"]').value = s.task_type;
+    document.querySelector('[name="cron_expression"]').value = s.cron_expression;
+    document.querySelector('[name="account_id"]').value = s.account_id || '';
+    document.querySelector('[name="copy_style"]').value = s.copy_style;
+    document.querySelector('[name="max_products_per_run"]').value = s.max_products_per_run;
+    document.querySelector('[name="refresh_before_post"]').checked = s.refresh_before_post;
+    document.getElementById('scheduleDialog').showModal();
+}
+
+async function deleteSchedule(id) {
+    if (!confirm('确定删除？')) return;
+    await fetch('/api/schedules/' + id, {method: 'DELETE'});
+    location.reload();
+}
+
+document.getElementById('scheduleForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const data = Object.fromEntries(new FormData(form));
+    if (data.account_id === '') data.account_id = null;
+    data.source_id = null;
+    data.max_products_per_run = parseInt(data.max_products_per_run);
+    data.refresh_before_post = data.refresh_before_post === 'true';
+    const isEdit = data.id;
+    const url = isEdit ? '/api/schedules/' + data.id : '/api/schedules';
+    const method = isEdit ? 'PUT' : 'POST';
+    delete data.id;
+    const resp = await fetch(url, {
+        method,
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify(data)
+    });
+    if (resp.ok) { document.getElementById('scheduleDialog').close(); location.reload(); }
+    else { alert('保存失败'); }
+});
+</script>
+{% endblock %}

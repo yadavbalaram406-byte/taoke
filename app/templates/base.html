@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{{ title }} — 自动运营系统</title>
+    <link rel="stylesheet" href="/static/style.css?v=2">
+</head>
+<body>
+    <aside class="sidebar">
+        <h1 class="logo">🤖 自动运营</h1>
+        <nav>
+            <div class="nav-section-label">自动带货</div>
+            <a href="/admin" class="{{ 'active' if request.url.path == '/admin' }}">📊 仪表盘</a>
+            <a href="/admin/products" class="{{ 'active' if request.url.path == '/admin/products' }}">📦 商品管理</a>
+            <a href="/admin/sources" class="{{ 'active' if request.url.path == '/admin/sources' }}">🔗 商品源</a>
+            <a href="/admin/schedules" class="{{ 'active' if request.url.path == '/admin/schedules' }}">⏰ 定时任务</a>
+            <a href="/admin/earnings" class="{{ 'active' if request.url.path == '/admin/earnings' }}">💰 收益看板</a>
+            <a href="/admin/posts" class="{{ 'active' if request.url.path == '/admin/posts' }}">📋 发布记录</a>
+            <div class="nav-section-label">自动养号</div>
+            <a href="/admin/nurture" class="{{ 'active' if request.url.path == '/admin/nurture' }}">🌱 自动养号</a>
+            <a href="/admin/nurture/records" class="{{ 'active' if request.url.path == '/admin/nurture/records' }}">📋 养号记录</a>
+            <a href="/admin/nurture/report" class="{{ 'active' if request.url.path == '/admin/nurture/report' }}">📈 效果分析</a>
+            <a href="/admin/accounts" class="{{ 'active' if request.url.path == '/admin/accounts' }}">👤 账号管理</a>
+        </nav>
+        <div class="sidebar-footer">
+            <a href="/docs" target="_blank">📖 API 文档</a>
+        </div>
+    </aside>
+    <main class="content">
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

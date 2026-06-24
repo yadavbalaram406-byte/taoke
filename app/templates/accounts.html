@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>👤 账号管理</h2>
+
+<div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
+    <button class="btn btn-primary" onclick="webLogin()" style="background:#ff8200;border-color:#ff8200;">
+        📱 扫码登录微博
+    </button>
+    <button class="btn" onclick="showForm()">✏️ 手动添加</button>
+</div>
+<p style="font-size:12px;color:#888;margin-bottom:16px;">
+    💡 扫码登录使用网页模拟，无需开放平台权限。<br>
+    点击后会自动打开浏览器窗口，用微博App扫码即可。登录成功后刷新页面。
+</p>
+
+<table>
+    <thead>
+        <tr>
+            <th>名称</th>
+            <th>平台</th>
+            <th>UID</th>
+            <th>登录状态</th>
+            <th>状态</th>
+            <th>创建时间</th>
+            <th>操作</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% for a in accounts %}
+        <tr>
+            <td>{{ a.name }}</td>
+            <td><span class="badge">{{ a.platform }}</span></td>
+            <td>{{ a.uid or '-' }}</td>
+            <td>
+                <span id="token-status-{{ a.id }}" style="font-size:12px;color:#888;">检测中...</span>
+                <script>
+                    (async () => {
+                        try {
+                            const resp = await fetch('/api/weibo-web/check?account_id={{ a.id }}');
+                            const data = await resp.json();
+                            const el = document.getElementById('token-status-{{ a.id }}');
+                            if (data.valid) {
+                                el.innerHTML = '<span style="color:#27ae60;">✅ 有效</span>';
+                            } else {
+                                el.innerHTML = '<span style="color:#e74c3c;">❌ 失效</span>';
+                            }
+                        } catch(e) { }
+                    })();
+                </script>
+            </td>
+            <td><span class="badge badge-{{ 'published' if a.is_active else 'failed' }}">{{ '启用' if a.is_active else '停用' }}</span></td>
+            <td>{{ to_local(a.created_at).strftime('%Y-%m-%d') if a.created_at else '-' }}</td>
+            <td>
+                <button class="btn btn-sm" onclick="checkToken({{ a.id }})">验证</button>
+                <button class="btn btn-sm" onclick="editAccount({{ a.id }})">编辑</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteAccount({{ a.id }})">删除</button>
+            </td>
+        </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if not accounts %}
+<p class="empty">暂无绑定账号，点击上方「授权绑定微博」开始</p>
+{% endif %}
+
+<dialog id="accountDialog">
+    <form id="accountForm" method="dialog">
+        <h3 id="dialogTitle">绑定账号</h3>
+        <input type="hidden" name="id" id="accountId">
+        <div class="form-group">
+            <label>名称</label>
+            <input type="text" name="name" required placeholder="例如：官方微博">
+        </div>
+        <div class="form-group">
+            <label>平台</label>
+            <select name="platform" required>
+                <option value="weibo">微博</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>用户 UID</label>
+            <input type="text" name="uid" placeholder="微博 OpenID">
+        </div>
+        <div class="form-group">
+            <label>Access Token</label>
+            <textarea name="access_token" rows="3" placeholder="微博 access_token（一键授权无需手动填写）"></textarea>
+        </div>
+        <div class="form-actions">
+            <button type="button" class="btn" onclick="document.getElementById('accountDialog').close()">取消</button>
+            <button type="submit" class="btn btn-primary">保存</button>
+        </div>
+    </form>
+</dialog>
+
+<script>
+// ===== Web 扫码登录 =====
+async function webLogin() {
+    const btn = event.target;
+    btn.disabled = true;
+    btn.textContent = '浏览器启动中...';
+
+    try {
+        // 先触发扫码登录，拿到 cookies + 昵称
+        btn.textContent = '请在弹出的浏览器中扫码登录...';
+        const loginResp = await fetch('/api/weibo-web/login', {method: 'POST'});
+        const loginData = await loginResp.json();
+
+        if (!loginData.ok) {
+            alert('登录失败');
+            return;
+        }
+
+        // 用昵称作为账号名，拿不到则用默认值
+        const accountName = loginData.screen_name || '微博账号';
+
+        btn.textContent = '保存中...';
+
+        // 创建账号并保存 cookies
+        const respAcc = await fetch('/api/accounts', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({platform: 'weibo', name: accountName, is_active: false})
+        });
+        const account = await respAcc.json();
+
+        const saveResp = await fetch('/api/weibo-web/accounts/' + account.id + '/save-cookies', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({cookies: loginData.cookies, name: accountName, uid: loginData.uid || ''})
+        });
+        const saveData = await saveResp.json();
+
+        alert(saveData.message);
+        location.reload();
+    } catch(e) {
+        alert('登录失败: ' + e.message);
+    }
+    btn.disabled = false;
+    btn.textContent = '📱 扫码登录微博';
+}
+
+// ===== 验证 =====
+async function checkToken(accountId) {
+    const resp = await fetch('/api/weibo-web/check?account_id=' + accountId);
+    const data = await resp.json();
+    const el = document.getElementById('token-status-' + accountId);
+    if (data.valid) {
+        el.innerHTML = '<span style="color:#27ae60;">✅ 有效</span>';
+        alert('Cookies 有效 ✅');
+    } else {
+        el.innerHTML = '<span style="color:#e74c3c;">❌ 失效</span>';
+        alert('Cookies 已过期，请重新扫码登录');
+    }
+}
+
+function showForm() {
+    document.getElementById('dialogTitle').textContent = '添加账号';
+    document.getElementById('accountForm').reset();
+    document.getElementById('accountId').value = '';
+    document.getElementById('accountDialog').showModal();
+}
+
+async function editAccount(id) {
+    const resp = await fetch('/api/accounts/' + id);
+    const a = await resp.json();
+    document.getElementById('dialogTitle').textContent = '编辑账号';
+    document.getElementById('accountId').value = a.id;
+    document.querySelector('[name="name"]').value = a.name;
+    document.querySelector('[name="platform"]').value = a.platform;
+    document.querySelector('[name="uid"]').value = a.uid;
+    document.querySelector('[name="access_token"]').value = a.access_token;
+    document.getElementById('accountDialog').showModal();
+}
+
+async function deleteAccount(id) {
+    if (!confirm('确定删除？')) return;
+    await fetch('/api/accounts/' + id, { method: 'DELETE' });
+    location.reload();
+}
+
+// ===== 手动输入授权码 =====
+function showManualCodeDialog() {
+    document.getElementById('codeDialog').showModal();
+}
+
+async function exchangeCode() {
+    const code = document.getElementById('authCode').value.trim();
+    if (!code) { alert('请输入授权码'); return; }
+    const btn = document.getElementById('btnExchange');
+    btn.disabled = true; btn.textContent = '换取中...';
+    try {
+        const resp = await fetch('/api/weibo/exchange-code?code=' + encodeURIComponent(code), { method: 'POST' });
+        const data = await resp.json();
+        if (resp.ok) {
+            alert(data.message);
+            document.getElementById('codeDialog').close();
+            location.reload();
+        } else {
+            alert('换取失败: ' + (data.detail || '未知错误'));
+        }
+    } catch(e) {
+        alert('网络错误: ' + e.message);
+    }
+    btn.disabled = false; btn.textContent = '确认绑定';
+}
+
+document.getElementById('accountForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const data = Object.fromEntries(new FormData(form));
+    const isEdit = data.id;
+    const url = isEdit ? '/api/accounts/' + data.id : '/api/accounts';
+    const method = isEdit ? 'PUT' : 'POST';
+    delete data.id;
+    const resp = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    });
+    if (resp.ok) {
+        document.getElementById('accountDialog').close();
+        location.reload();
+    } else {
+        alert('保存失败');
+    }
+});
+</script>
+
+<!-- 手动输入授权码弹窗 -->
+<dialog id="codeDialog">
+    <h3>📋 手动输入微博授权码</h3>
+    <p style="font-size:13px;color:#666;margin-bottom:16px;">
+        1. 点击下方按钮打开微博授权页<br>
+        2. 授权后会跳转到一个页面，页面上会显示授权码 <code style="background:#ffeaa7;padding:1px 4px;">code=xxxxx</code><br>
+        3. 复制 code 粘贴到下方输入框<br>
+        4. 点击确认绑定
+    </p>
+    <button class="btn" onclick="weiboAuth()" style="margin-bottom:16px;">🔗 打开微博授权页</button>
+    <div class="form-group">
+        <label>授权码 (code)</label>
+        <input type="text" id="authCode" placeholder="粘贴从微博授权页获取的 code" style="font-family:monospace;">
+    </div>
+    <div class="form-actions">
+        <button class="btn" onclick="document.getElementById('codeDialog').close()">取消</button>
+        <button class="btn btn-primary" id="btnExchange" onclick="exchangeCode()">确认绑定</button>
+    </div>
+</dialog>
+
+{% endblock %}

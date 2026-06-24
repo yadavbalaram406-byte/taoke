@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>📈 效果分析报告</h2>
+
+<div class="toolbar" style="display:flex;align-items:center;gap:12px;margin-bottom:20px;">
+    <a href="/admin/nurture" class="btn btn-sm" style="text-decoration:none;">← 返回自动养号</a>
+    <select id="days" style="padding:6px 10px;border:1px solid #ddd;border-radius:6px;font-size:13px;">
+        <option value="1">最近 1 天</option>
+        <option value="3">最近 3 天</option>
+        <option value="7">最近 7 天</option>
+    </select>
+    <button class="btn btn-sm" onclick="refreshViewsThenReport()">🔄 刷新后生成</button>
+    <button class="btn btn-primary btn-sm" id="btn-gen" onclick="generateReport()">生成报告</button>
+    <span id="status" style="font-size:12px;color:#888;"></span>
+</div>
+
+<div id="report-container" style="background:#fff;border-radius:10px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,0.08);min-height:200px;">
+    <p style="text-align:center;color:#999;padding:60px 0;">选择统计天数，点击「生成报告」</p>
+</div>
+
+<script>
+async function refreshViewsThenReport() {
+    const status = document.getElementById('status');
+    status.textContent = '正在刷新阅读量...';
+    try {
+        const resp = await fetch('/api/nurture/update-views', {method: 'POST'});
+        const data = await resp.json();
+        status.textContent = `刷新完成(${data.updated}条)，正在生成报告...`;
+        setTimeout(() => generateReport(), 500);
+    } catch(e) {
+        status.textContent = '刷新失败: ' + e.message;
+    }
+}
+
+async function generateReport() {
+    const days = document.getElementById('days').value;
+    const btn = document.getElementById('btn-gen');
+    const status = document.getElementById('status');
+    const container = document.getElementById('report-container');
+
+    btn.disabled = true;
+    btn.textContent = '生成中...';
+    status.textContent = '正在采集数据，可能需要 10-20 秒...';
+
+    try {
+        const resp = await fetch('/api/nurture/report/generate?days=' + days, {method: 'POST'});
+        const data = await resp.json();
+        if (data.ok && data.report) {
+            container.innerHTML = renderMarkdown(data.report);
+        } else {
+            container.innerHTML = '<p style="color:#e74c3c;">生成失败，请重试</p>';
+        }
+    } catch(e) {
+        container.innerHTML = '<p style="color:#e74c3c;">网络错误: ' + e.message + '</p>';
+    }
+
+    btn.disabled = false;
+    btn.textContent = '生成报告';
+    status.textContent = '';
+}
+
+function renderMarkdown(md) {
+    let html = md
+        // 标题
+        .replace(/^### (.+)$/gm, '<h3 style="margin-top:20px;margin-bottom:10px;font-size:16px;">$1</h3>')
+        .replace(/^## (.+)$/gm, '<h2 style="margin-top:24px;margin-bottom:12px;font-size:20px;color:#2d3436;">$1</h2>')
+        // 加粗
+        .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+        // 列表
+        .replace(/^- (.+)$/gm, '<li style="margin:4px 0 4px 20px;font-size:14px;color:#555;">$1</li>')
+        .replace(/^(\d+)\. (.+)$/gm, '<li style="margin:4px 0 4px 20px;font-size:14px;color:#555;">$1. $2</li>')
+        // 分隔线
+        .replace(/^---$/gm, '<hr style="margin:20px 0;border:none;border-top:1px solid #eee;">')
+        // 换行
+        .replace(/\n\n/g, '</p><p style="margin-bottom:8px;font-size:14px;line-height:1.8;color:#333;">')
+        // emoji
+        .replace(/🥇/g, '<span style="font-size:20px;">🥇</span>')
+        .replace(/🔻/g, '<span style="font-size:16px;">🔻</span>')
+        // 阅读量数字
+        .replace(/(\d{1,3}(,\d{3})*)\s*阅读/g, '<strong style="color:#0984e3;">$1 阅读</strong>')
+        // code/pre blocks for data
+        .replace(/^- \[([\s\d]+)\]/gm, '<li style="margin:2px 0 2px 20px;font-size:13px;font-family:monospace;color:#666;">[$1]');
+
+    // Wrap consecutive <li> in <ul>
+    html = html.replace(/((?:<li[^>]*>.*?<\/li>\n?)+)/g, '<ul style="list-style:none;padding:0;">$1</ul>');
+
+    return '<p style="margin-bottom:8px;font-size:14px;line-height:1.8;color:#333;">' + html + '</p>';
+}
+</script>
+{% endblock %}
