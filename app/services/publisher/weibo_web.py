@@ -1,38 +1,29 @@
-import asyncio, base64, json, os, random, time, uuid
+import asyncio, base64, json, os, random, re, time, uuid
+import httpx
 from playwright.async_api import async_playwright
 from loguru import logger
 
 from app.services.publisher.base import BasePublisher, PublishResult
 
 # ====== 登录会话管理（内存中） ======
-_login_sessions: dict[str, dict] = {}  # session_id -> {browser, context, page, created_at}
+# 采用 Sina SSO 扫码登录：纯 HTTP 调接口，无需浏览器（VPS headless 友好）
+_login_sessions: dict[str, dict] = {}  # session_id -> {qrid, created_at}
+
+SSO_IMAGE = "https://login.sina.com.cn/sso/qrcode/image"
+SSO_CHECK = "https://login.sina.com.cn/sso/qrcode/check"
+SSO_LOGIN = "https://login.sina.com.cn/sso/login.php"
+PC_UA = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
 
 
 def _cleanup_session(session_id: str):
     """清理登录会话"""
-    if session_id in _login_sessions:
-        try:
-            sess = _login_sessions.pop(session_id)
-            asyncio.ensure_future(_safe_close(sess))
-        except Exception:
-            pass
+    _login_sessions.pop(session_id, None)
 
 
-async def _safe_close(sess: dict):
-    """安全关闭浏览器"""
-    try:
-        if "browser" in sess:
-            await sess["browser"].close()
-    except Exception:
-        pass
-    try:
-        if "playwright" in sess:
-            await sess["playwright"].stop()
-    except Exception:
-        pass
-
-
-async def _cleanup_expired_sessions():
+def _cleanup_expired_sessions():
     """清理超过 5 分钟的过期会话"""
     now = time.time()
     expired = [
@@ -41,7 +32,16 @@ async def _cleanup_expired_sessions():
     ]
     for sid in expired:
         logger.info(f"清理过期登录会话: {sid}")
-        _cleanup_session(sid)
+        _login_sessions.pop(sid, None)
+
+
+def _parse_jsonp(text: str) -> dict:
+    """从 STK(...) / callback(...) 包裹的 JSONP 响应里提取 JSON 对象"""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        return json.loads(text[start:end + 1])
+    raise ValueError(f"无法解析SSO响应: {text[:200]}")
 
 
 # ====== 行为模拟工具 ======
@@ -88,225 +88,226 @@ class WebWeiboPublisher(BasePublisher):
         except json.JSONDecodeError:
             return []
 
-    # ====== 扫码登录（VPS headless + 手机扫码） ======
+    # ====== 扫码登录（Sina SSO 接口，纯HTTP，无浏览器） ======
 
     @staticmethod
     async def start_qr_login() -> dict | None:
         """
-        启动 headless 浏览器（桌面模式）→ 打开微博 PC 登录页 → 截取二维码 → 返回 base64 + session_id
-        桌面版 passport.weibo.com 默认展示二维码登录，结构稳定。
+        获取 Sina SSO 登录二维码（纯 HTTP，无需浏览器）。
+        流程：调 /sso/qrcode/image 拿 qrid + 图片URL → 下载二维码 → base64 返回。
+        二维码内容是 passport.weibo.cn 扫码地址，微博App扫一扫即可。
         """
-        await _cleanup_expired_sessions()
-
-        # 关键修复：用 .start() 手动管理生命周期，不用 async with
-        # async with 会在函数返回时自动关闭 playwright，连带关掉浏览器
-        p = await async_playwright().start()
+        _cleanup_expired_sessions()
         try:
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--disable-blink-features=AutomationControlled",
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                ],
-            )
-            # 桌面版：宽屏 + 桌面 UA
-            context = await browser.new_context(
-                viewport={"width": 1280, "height": 800},
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/124.0.0.0 Safari/537.36"
-                ),
-                locale="zh-CN",
-            )
-            await context.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', {get: () => false});
-                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
-            """)
+            async with httpx.AsyncClient(
+                timeout=15,
+                headers={"User-Agent": PC_UA, "Referer": "https://weibo.com/"},
+            ) as client:
+                r = await client.get(SSO_IMAGE, params={
+                    "entry": "weibo", "size": "180", "callback": "STK",
+                })
+                data = _parse_jsonp(r.text)
+                if data.get("retcode") != 20000000:
+                    logger.error(f"获取二维码失败: {data}")
+                    return None
 
-            page = await context.new_page()
+                d = data.get("data", {})
+                qrid = d.get("qrid")
+                image_url = d.get("image", "")
+                if image_url.startswith("//"):
+                    image_url = "https:" + image_url
+                if not qrid or not image_url:
+                    logger.error(f"二维码响应缺字段: {data}")
+                    return None
 
-            # 打开微博首页（未登录时自动展示扫码登录区）
-            logger.info("打开微博PC首页...")
-            await page.goto("https://weibo.com/", wait_until="networkidle", timeout=20000)
-            await asyncio.sleep(3)
-            logger.info(f"当前URL: {page.url}")
-
-            # 如果跳转到了登录页，等待加载
-            if "login" in page.url or "passport" in page.url:
-                await asyncio.sleep(2)
-
-            # 如果页面有「扫码登录」tab，点击切换
-            try:
-                qr_tab = page.locator('a:has-text("扫码登录"), [data-tab="qrcode"], .qr_tab, a:has-text("扫码")').first
-                if await qr_tab.count() > 0:
-                    await qr_tab.click()
-                    await asyncio.sleep(2)
-                    logger.info("已切换到扫码登录 tab")
-            except Exception as e:
-                logger.info(f"无需切换 tab（忽略）: {e}")
-
-            # 等待二维码渲染
-            await asyncio.sleep(2)
-
-            # 定位二维码元素
-            qr_base64 = ""
-            qr_found = False
-
-            for selector in [
-                '#pl_login_form img',
-                '.qrcode_wrap img',
-                '.qrcode img',
-                '[class*="qrcode"] img',
-                '[class*="qr_img"]',
-                'img[src*="qrcode"]',
-                'img[src*="qr"]',
-                'img[alt*="二维码"]',
-                'canvas',
-                '.login-qrcode img',
-            ]:
-                try:
-                    el = page.locator(selector).first
-                    cnt = await el.count()
-                    if cnt > 0:
-                        await el.wait_for(state="visible", timeout=3000)
-                        qr_bytes = await el.screenshot(timeout=5000)
-                        if qr_bytes and len(qr_bytes) > 500:
-                            qr_base64 = base64.b64encode(qr_bytes).decode()
-                            logger.info(f"二维码截取成功 selector={selector} size={len(qr_bytes)}")
-                            qr_found = True
-                            break
-                except Exception:
-                    continue
-
-            # fallback: 截取整个页面
-            if not qr_found:
-                logger.warning("未定位到二维码元素，截取整页")
-                try:
-                    full_bytes = await page.screenshot(full_page=False)
-                    qr_base64 = base64.b64encode(full_bytes).decode()
-                    logger.info(f"已截取整页 size={len(full_bytes)}")
-                except Exception as e:
-                    logger.error(f"截取失败: {e}")
-
-            if not qr_base64:
-                await browser.close()
-                await p.stop()
-                return None
+                img_resp = await client.get(image_url)
+                if img_resp.status_code != 200 or not img_resp.content:
+                    logger.error(f"下载二维码图片失败: {img_resp.status_code}")
+                    return None
+                qr_base64 = base64.b64encode(img_resp.content).decode()
 
             session_id = uuid.uuid4().hex[:16]
-            # 存 playwright 实例，防止被 GC 关闭
-            _login_sessions[session_id] = {
-                "playwright": p,
-                "browser": browser,
-                "context": context,
-                "page": page,
-                "created_at": time.time(),
-            }
-
-            logger.info(f"登录会话已创建: {session_id}, URL: {page.url}")
-            return {
-                "session_id": session_id,
-                "qr_code": qr_base64,
-            }
+            _login_sessions[session_id] = {"qrid": qrid, "created_at": time.time()}
+            logger.info(f"SSO登录会话已创建: {session_id}, qrid={qrid[:12]}...")
+            return {"session_id": session_id, "qr_code": qr_base64}
 
         except Exception as e:
-            logger.error(f"start_qr_login 异常: {e}")
-            try:
-                await p.stop()
-            except Exception:
-                pass
+            logger.exception(f"start_qr_login 异常: {e}")
             return None
 
     @staticmethod
     async def check_qr_login(session_id: str) -> dict | None:
-        """检查扫码登录是否完成，完成则返回 cookies"""
-        await _cleanup_expired_sessions()
-
+        """
+        轮询扫码状态。
+        retcode: 50114001=未扫描, 50114002=已扫描待确认, 20000000=成功(含alt令牌)。
+        成功后用 alt 走跨域登录换取 cookies。
+        """
+        _cleanup_expired_sessions()
         sess = _login_sessions.get(session_id)
         if not sess:
             return {"ready": False, "error": "会话已过期，请重新扫码"}
 
-        page = sess["page"]
-        context = sess["context"]
-        browser = sess["browser"]
+        if time.time() - sess.get("created_at", 0) > 300:
+            _login_sessions.pop(session_id, None)
+            return {"ready": False, "error": "登录超时（5分钟），请重新扫码"}
 
+        qrid = sess["qrid"]
         try:
-            current_url = page.url
-            logger.info(f"检查登录状态，当前URL: {current_url}")
+            async with httpx.AsyncClient(
+                timeout=15,
+                headers={"User-Agent": PC_UA, "Referer": "https://weibo.com/"},
+            ) as client:
+                r = await client.get(SSO_CHECK, params={
+                    "entry": "weibo", "qrid": qrid, "callback": "STK",
+                })
+                data = _parse_jsonp(r.text)
+                retcode = data.get("retcode")
 
-            # 桌面版扫码成功后会跳转到 weibo.com 或 sina.com 首页
-            # 移动版扫码成功后会跳转到 m.weibo.cn
-            logged_in_urls = (
-                "weibo.com" in current_url and "passport" not in current_url
-            )
-
-            if logged_in_urls:
-                await asyncio.sleep(2)
-
-                # 用 API 确认登录态
-                logged_in = False
-                try:
-                    resp = await page.evaluate("""
-                        async () => {
-                            try {
-                                const r = await fetch('https://m.weibo.cn/api/config', {credentials: 'include'});
-                                const d = await r.json();
-                                return d.data ? (d.data.uid || false) : false;
-                            } catch(e) { return false; }
-                        }
-                    """)
-                    if resp:
-                        logged_in = True
-                        logger.info(f"API确认登录成功, uid={resp}")
-                except Exception:
-                    pass
-
-                # API 检测不到时退一步：URL 已跳离 passport 就认为成功
-                if not logged_in:
-                    logged_in = True
-                    logger.info("URL已跳离passport，视为登录成功")
-
-                if logged_in:
-                    cookies = await context.cookies()
-                    cookies_json = json.dumps(cookies, ensure_ascii=False)
-                    logger.info(f"扫码登录成功! 获取到 {len(cookies)} 个 cookies")
-
-                    await browser.close()
-                    if "playwright" in sess:
-                        await sess["playwright"].stop()
+                if retcode == 50114001:          # 未扫描
+                    return {"ready": False}
+                if retcode == 50114002:          # 已扫描，待手机确认
+                    return {"ready": False, "scanned": True}
+                if retcode != 20000000:          # 失效/异常
+                    logger.warning(f"扫码状态异常 retcode={retcode}: {data}")
                     _login_sessions.pop(session_id, None)
+                    return {"ready": False, "error": data.get("msg") or "二维码已失效，请重新扫码"}
 
-                    return {
-                        "ready": True,
-                        "cookies": cookies_json,
-                        "cookie_count": len(cookies),
-                    }
+                alt = data.get("data", {}).get("alt") or data.get("alt")
+                if not alt:
+                    logger.error(f"扫码成功但缺 alt 令牌: {data}")
+                    _login_sessions.pop(session_id, None)
+                    return {"ready": False, "error": "登录令牌缺失，请重试"}
 
-            # 检查是否超时（5 分钟）
-            if time.time() - sess.get("created_at", 0) > 300:
-                await browser.close()
-                if "playwright" in sess:
-                    await sess["playwright"].stop()
-                _login_sessions.pop(session_id, None)
-                return {"ready": False, "error": "登录超时（5分钟），请重新扫码"}
+            # 用 alt 换取 cookies
+            cookies = await WebWeiboPublisher._exchange_alt_for_cookies(alt)
+            _login_sessions.pop(session_id, None)
+            if not cookies:
+                return {"ready": False, "error": "换取登录态失败，请重试"}
 
-            return {"ready": False}
+            cookies_json = json.dumps(cookies, ensure_ascii=False)
+            # 拉取昵称/uid，同时验证 cookie 对 m.weibo.cn 是否有效
+            screen_name, uid = await WebWeiboPublisher._fetch_profile(cookies)
+            logger.info(
+                f"SSO扫码登录成功! cookies={len(cookies)}个, uid={uid or '未取到'}, "
+                f"昵称={screen_name or '未取到'}"
+            )
+            return {
+                "ready": True,
+                "cookies": cookies_json,
+                "cookie_count": len(cookies),
+                "screen_name": screen_name,
+                "uid": uid,
+            }
 
         except Exception as e:
-            logger.error(f"检查登录状态异常: {e}")
-            try:
-                await browser.close()
-            except Exception:
-                pass
-            try:
-                if "playwright" in sess:
-                    await sess["playwright"].stop()
-            except Exception:
-                pass
+            logger.exception(f"check_qr_login 异常: {e}")
             _login_sessions.pop(session_id, None)
             return {"ready": False, "error": f"检查失败: {e}"}
+
+    @staticmethod
+    async def _exchange_alt_for_cookies(alt: str) -> list[dict]:
+        """用 alt 令牌走跨域登录，收集所有微博域的 cookies（playwright 格式）"""
+        collected: dict[tuple, dict] = {}
+        async with httpx.AsyncClient(
+            timeout=15, follow_redirects=True,
+            headers={"User-Agent": PC_UA, "Referer": "https://weibo.com/"},
+        ) as client:
+            r = await client.get(SSO_LOGIN, params={
+                "entry": "weibo",
+                "returntype": "TEXT",
+                "crossdomain": "1",
+                "cdult": "3",
+                "domain": "weibo.com",
+                "alt": alt,
+                "savestate": "30",
+                "callback": "STK",
+            })
+            try:
+                data = _parse_jsonp(r.text)
+            except Exception:
+                data = {}
+            logger.info(f"login.php 返回: {str(data)[:300]}")
+
+            urls = (
+                data.get("crossDomainUrlList")
+                or data.get("data", {}).get("crossDomainUrlList")
+                or []
+            )
+            # 逐个访问跨域 URL 以在各域种下 cookie（.weibo.com / .sina.com.cn / .weibo.cn）
+            for u in urls:
+                if u.startswith("//"):
+                    u = "https:" + u
+                try:
+                    await client.get(u)
+                except Exception as e:
+                    logger.warning(f"跨域种cookie失败 {u[:60]}: {e}")
+
+            # 关键：访问 m.weibo.cn 首页（非API），触发 SSO 重定向链，
+            # 用一次性的 mweibo_short_token 换取 .weibo.cn 域的 SUB（完成移动端登录，MLOGIN=1）
+            try:
+                await client.get(
+                    "https://m.weibo.cn/",
+                    headers={"User-Agent": (
+                        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                        "Version/17.0 Mobile/15E148 Safari/604.1"
+                    )},
+                )
+            except Exception as e:
+                logger.warning(f"访问 m.weibo.cn 首页失败: {e}")
+
+            for c in client.cookies.jar:
+                key = (c.name, c.domain, c.path)
+                collected[key] = {
+                    "name": c.name,
+                    "value": c.value,
+                    "domain": c.domain,
+                    "path": c.path or "/",
+                }
+
+        cookies = list(collected.values())
+        domains = sorted({c["domain"] for c in cookies})
+        logger.info(f"收集到 {len(cookies)} 个 cookies，覆盖域: {domains}")
+        # 调试：打印 weibo.cn 家族的关键 cookie，便于排查 m.weibo.cn 登录态
+        wb_cn = [f"{c['name']}@{c['domain']}" for c in cookies
+                 if c["domain"].lstrip(".").endswith("weibo.cn")]
+        logger.info(f"weibo.cn 域 cookies: {wb_cn}")
+        return cookies
+
+    @staticmethod
+    def _build_cookie_jar(cookies: list[dict]) -> "httpx.Cookies":
+        """把 cookie 列表构造成带域名的 httpx.Cookies，由 httpx 按请求主机自动挑选正确的同名 cookie"""
+        jar = httpx.Cookies()
+        for c in cookies:
+            try:
+                jar.set(c["name"], c["value"], domain=c.get("domain", ""), path=c.get("path", "/"))
+            except Exception:
+                pass
+        return jar
+
+    @staticmethod
+    async def _fetch_profile(cookies: list[dict]) -> tuple[str, str]:
+        """用 cookies 调 m.weibo.cn 拿昵称和 uid（兼作 cookie 有效性验证）"""
+        jar = WebWeiboPublisher._build_cookie_jar(cookies)
+        headers = {
+            "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
+            "Referer": "https://m.weibo.cn/",
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10, cookies=jar) as client:
+                cfg = (await client.get("https://m.weibo.cn/api/config", headers=headers)).json()
+                uid = str(cfg.get("data", {}).get("uid", "") or "")
+                screen_name = ""
+                if uid:
+                    prof = (await client.get(
+                        f"https://m.weibo.cn/api/container/getIndex?containerid=100505{uid}&type=uid&value={uid}",
+                        headers=headers,
+                    )).json()
+                    screen_name = prof.get("data", {}).get("userInfo", {}).get("screen_name", "")
+                return screen_name, uid
+        except Exception as e:
+            logger.warning(f"获取昵称失败: {e}")
+            return "", ""
 
     @staticmethod
     async def cancel_qr_login(session_id: str):
@@ -415,12 +416,9 @@ class WebWeiboPublisher(BasePublisher):
             return False
 
         try:
-            import httpx
-            cookie_dict = {}
-            for c in cookies:
-                cookie_dict[c.get("name", "")] = c.get("value", "")
-
-            async with httpx.AsyncClient(timeout=10, cookies=cookie_dict) as client:
+            # 用带域名的 cookie jar，避免重名 cookie（如多个域的 SUB）互相覆盖
+            jar = WebWeiboPublisher._build_cookie_jar(cookies)
+            async with httpx.AsyncClient(timeout=10, cookies=jar) as client:
                 resp = await client.get(
                     "https://m.weibo.cn/api/config",
                     headers={

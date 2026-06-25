@@ -20,10 +20,10 @@ class SaveCookiesRequest(BaseModel):
 
 @router.post("/login/start")
 async def start_qr_login():
-    """启动 headless 浏览器 → 截取微博登录二维码 → 返回 base64 图片 + session_id"""
+    """调用 Sina SSO 接口获取登录二维码 → 返回 base64 图片 + session_id"""
     result = await WebWeiboPublisher.start_qr_login()
     if not result:
-        raise HTTPException(status_code=500, detail="无法打开微博登录页，请重试")
+        raise HTTPException(status_code=500, detail="获取二维码失败，请重试")
     return {
         "ok": True,
         "session_id": result["session_id"],
