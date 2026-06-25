@@ -5,7 +5,7 @@ import json
 import os
 import random
 
-from sqlalchemy import select, func
+from sqlalchemy import select, func, desc
 from loguru import logger
 
 from app.templates_env import to_local, today_start_utc
@@ -137,29 +137,33 @@ async def execute_nurture_publish(schedule_id: int):
     interval_minutes = extra.get("interval_minutes", 30)
     max_posts_per_day = extra.get("max_posts_per_day", 5)
     content_style = extra.get("content_style", "knowledge")
-    # 支持"轮换"模式：每次随机从知识干货和温暖治愈中选一个
     use_remix = False
     if content_style == "rotate":
-        dynamic = extra.get("dynamic_weights", None)
-        pool = ["knowledge", "warm"]
-        if dynamic:
-            styles, weights = zip(*dynamic.items())
-            content_style = random.choices(styles, weights=weights)[0]
-        else:
-            content_style = random.choices(
-                pool, weights=[0.6, 0.4],
-            )[0]
-        # 15% 概率用 remix 改写，提升内容质量
-        use_remix = random.random() < 0.15
-        logger.info(f"轮换风格 → {content_style}" + (" (remix)" if use_remix else ""))
+        # 真正交替：查本账号最近一条 knowledge/warm 记录，用另一种
+        from app.database import async_session as _session
+        async with _session() as _s:
+            row = await _s.execute(
+                select(NurtureRecord.content_style)
+                .where(
+                    NurtureRecord.account_id == account_id,
+                    NurtureRecord.content_style.in_(["knowledge", "warm"]),
+                )
+                .order_by(desc(NurtureRecord.created_at))
+                .limit(1)
+            )
+            last_style = row.scalar_one_or_none()
+        content_style = "warm" if last_style == "knowledge" else "knowledge"
+        logger.info(f"交替风格 → {content_style}（上一条={last_style or '无记录'}）")
     filter_keywords = set(extra.get("filter_keywords", "").split(",")) if extra.get("filter_keywords") else set()
     preferred_categories = set(extra.get("preferred_categories", "").split(",")) if extra.get("preferred_categories") else set()
     enable_image = extra.get("enable_image", True)
 
-    # 0. 分时段策略：仅 7:00-23:00 发布
+    # 0. 分时段策略：仅 active_start_hour - active_end_hour 发布（北京时）
+    active_start = extra.get("active_start_hour", 7)
+    active_end = extra.get("active_end_hour", 23)
     now_hour = to_local(datetime.datetime.utcnow()).hour
-    if now_hour < 7 or now_hour >= 23:
-        logger.info(f"[养号] {now_hour}:00 非发布时段，跳过")
+    if now_hour < active_start or now_hour >= active_end:
+        logger.info(f"[养号] {now_hour}:00 非发布时段（{active_start}:00-{active_end}:00），跳过")
         await _touch()
         return
 

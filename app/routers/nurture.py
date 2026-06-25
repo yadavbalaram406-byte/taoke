@@ -4,6 +4,7 @@ import json
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, update
 
@@ -192,6 +193,8 @@ def _schedule_to_read(s: Schedule, today_count: int = 0) -> dict:
         "filter_keywords": extra.get("filter_keywords", ""),
         "preferred_categories": extra.get("preferred_categories", ""),
         "enable_image": extra.get("enable_image", True),
+        "active_start_hour": extra.get("active_start_hour", 7),
+        "active_end_hour": extra.get("active_end_hour", 23),
         "is_active": s.is_active,
         "last_run_at": s.last_run_at,
         "today_post_count": today_count,
@@ -239,6 +242,8 @@ async def create_nurture_schedule(data: NurtureScheduleCreate, db: AsyncSession 
         "filter_keywords": data.filter_keywords,
         "preferred_categories": data.preferred_categories,
         "enable_image": data.enable_image,
+        "active_start_hour": data.active_start_hour,
+        "active_end_hour": data.active_end_hour,
     }, ensure_ascii=False)
 
     schedule = Schedule(
@@ -278,6 +283,8 @@ async def update_nurture_schedule(
         "filter_keywords": "filter_keywords",
         "preferred_categories": "preferred_categories",
         "enable_image": "enable_image",
+        "active_start_hour": "active_start_hour",
+        "active_end_hour": "active_end_hour",
     }
     for field, extra_key in field_map.items():
         val = getattr(data, field, None)
@@ -463,6 +470,28 @@ async def delete_tech_schedule(schedule_id: int, db: AsyncSession = Depends(get_
     return {"ok": True}
 
 
+# ====== 飞书AI资讯（feishu_publish）— 仅支持暂停/恢复 ======
+
+class FeishuToggleRequest(BaseModel):
+    is_active: bool
+
+
+@router.put("/feishu/schedules/{schedule_id}")
+async def toggle_feishu_schedule(
+    schedule_id: int, data: FeishuToggleRequest, db: AsyncSession = Depends(get_db)
+):
+    result = await db.execute(
+        select(Schedule).where(Schedule.id == schedule_id, Schedule.task_type == "feishu_publish")
+    )
+    s = result.scalar_one_or_none()
+    if not s:
+        raise HTTPException(status_code=404, detail="飞书任务不存在")
+    s.is_active = data.is_active
+    await db.commit()
+    await _refresh_nurture_jobs(db)
+    return {"ok": True, "id": s.id, "is_active": s.is_active}
+
+
 async def _refresh_nurture_jobs(db=None):
     """刷新养号相关的调度任务"""
     # 移除所有养号任务（按函数名字符串匹配，避免热重载后引用对不上）
@@ -580,6 +609,21 @@ async def nurture_page(request: Request, db: AsyncSession = Depends(get_db)):
         )
     )).scalar() or 0
 
+    feishu_rows = (await db.execute(
+        select(Schedule).where(Schedule.task_type == "feishu_publish").order_by(Schedule.id)
+    )).scalars().all()
+    feishu_today = (await db.execute(
+        select(func.count(NurtureRecord.id)).where(
+            NurtureRecord.topic_name == "飞书AI资讯",
+            NurtureRecord.status == "published",
+            NurtureRecord.created_at > since,
+        )
+    )).scalar() or 0
+    feishu_schedules = [
+        {"id": s.id, "name": s.name, "is_active": s.is_active, "last_run_at": s.last_run_at}
+        for s in feishu_rows
+    ]
+
     return render_template("nurture.html", {
         "request": request,
         "title": "自动养号",
@@ -590,6 +634,8 @@ async def nurture_page(request: Request, db: AsyncSession = Depends(get_db)):
         "default_interval": settings.NURTURE_DEFAULT_INTERVAL_MINUTES,
         "default_max_posts": settings.NURTURE_MAX_POSTS_PER_DAY,
         "tech_today": tech_today,
+        "feishu_schedules": feishu_schedules,
+        "feishu_today": feishu_today,
     })
 
 

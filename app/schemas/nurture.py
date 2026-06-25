@@ -47,10 +47,12 @@ class NurtureScheduleCreate(BaseModel):
     account_id: int
     interval_minutes: int = 30
     max_posts_per_day: int = 5
-    content_style: str = "sharp"  # sharp/humorous/knowledge/warm
+    content_style: str = "sharp"  # sharp/humorous/knowledge/warm/rotate
     filter_keywords: str = ""  # 逗号分隔的自定义过滤词
     preferred_categories: str = ""  # 逗号分隔的偏好分类
     enable_image: bool = True
+    active_start_hour: int = 7   # 北京时，发布开始时（含），默认 7:00
+    active_end_hour: int = 23    # 北京时，发布结束时（不含），默认 23:00
     is_active: bool = True
 
 
@@ -64,6 +66,8 @@ class NurtureScheduleRead(BaseModel):
     filter_keywords: str
     preferred_categories: str
     enable_image: bool
+    active_start_hour: int
+    active_end_hour: int
     is_active: bool
     last_run_at: datetime.datetime | None
     today_post_count: int = 0
@@ -81,4 +85,6 @@ class NurtureScheduleUpdate(BaseModel):
     filter_keywords: str | None = None
     preferred_categories: str | None = None
     enable_image: bool | None = None
+    active_start_hour: int | None = None
+    active_end_hour: int | None = None
     is_active: bool | None = None

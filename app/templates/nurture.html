@@ -56,6 +56,7 @@
             <tr>
                 <th>任务名称</th>
                 <th>发布间隔</th>
+                <th>时段</th>
                 <th>今日进度</th>
                 <th>文案风格</th>
                 <th>配图</th>
@@ -70,6 +71,7 @@
             <tr>
                 <td>{{ s.name }}</td>
                 <td>每 {{ s.interval_minutes }} 分钟</td>
+                <td style="font-size:12px;white-space:nowrap;">{{ s.active_start_hour }}:00-{{ s.active_end_hour }}:00</td>
                 <td>
                     {% if s.today_post_count >= s.max_posts_per_day %}
                     <span style="color:#e67e22;font-weight:600;">{{ s.today_post_count }}/{{ s.max_posts_per_day }}</span>
@@ -83,6 +85,7 @@
                     {% elif s.content_style == 'humorous' %}😄 幽默有趣
                     {% elif s.content_style == 'knowledge' %}📚 干货知识
                     {% elif s.content_style == 'warm' %}💛 温暖治愈
+                    {% elif s.content_style == 'rotate' %}🔄 交替轮换
                     {% else %}{{ s.content_style }}{% endif %}
                 </td>
                 <td>{{ '✅' if s.enable_image else '❌' }}</td>
@@ -165,6 +168,39 @@
         </tbody>
     </table>
     </div>
+
+    <!-- 飞书AI资讯区块 -->
+    <h4 style="margin:28px 0 8px;font-size:15px;">📨 飞书AI资讯</h4>
+    <p style="font-size:12px;color:#888;margin-bottom:12px;">
+        被动接收飞书群消息后自动排版发布，今日已发 <strong>{{ feishu_today }}</strong> 条。无需配置，仅支持暂停/恢复。
+    </p>
+    <div class="table-wrapper">
+    <table>
+        <thead>
+            <tr>
+                <th>任务名称</th>
+                <th>上次执行</th>
+                <th>状态</th>
+            </tr>
+        </thead>
+        <tbody>
+        {% for s in feishu_schedules %}
+            <tr>
+                <td>{{ s.name }}</td>
+                <td>{{ to_local(s.last_run_at).strftime('%m-%d %H:%M') if s.last_run_at else '从未' }}</td>
+                <td>
+                    <span class="badge badge-{{ 'published' if s.is_active else 'failed' }}" style="cursor:pointer"
+                          onclick="toggleFeishu({{ s.id }}, {{ 'true' if s.is_active else 'false' }})">
+                        {{ '▶ 运行中' if s.is_active else '⏸ 已暂停' }}
+                    </span>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="3" style="color:#999;text-align:center;">未找到飞书任务记录</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    </div>
 </div>
 
 <!-- ===== 所有 dialog（在 tab 外，全局可用） ===== -->
@@ -188,6 +224,16 @@
             <input type="number" name="max_posts_per_day" value="{{ default_max_posts }}" min="1" max="200">
         </div>
         <div class="form-group">
+            <label>发布时段（北京时）</label>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <input type="number" name="active_start_hour" value="7" min="0" max="23" style="width:70px;">
+                <span>:00 — </span>
+                <input type="number" name="active_end_hour" value="23" min="1" max="24" style="width:70px;">
+                <span>:00</span>
+            </div>
+            <small style="color:#888;">默认 7:00-23:00，凌晨不发，更像正常人</small>
+        </div>
+        <div class="form-group">
             <label>发布账号</label>
             <select name="account_id" required>
                 <option value="">— 选择微博账号 —</option>
@@ -199,7 +245,7 @@
         <div class="form-group">
             <label>文案风格</label>
             <select name="content_style">
-                <option value="rotate">🎲 随机轮换 — 四种风格轮流尝试</option>
+                <option value="rotate">🔄 交替(知识↔治愈) — 每次轮流切换</option>
                 <option value="sharp">🔪 犀利观点 — 有态度、敢表达</option>
                 <option value="humorous">😄 幽默有趣 — 用幽默调侃热点</option>
                 <option value="knowledge">📚 干货知识 — 分享有信息量的内容</option>
@@ -421,6 +467,8 @@ function showForm() {
     document.getElementById('nurtureId').value = '';
     document.querySelector('[name="interval_minutes"]').value = {{ default_interval }};
     document.querySelector('[name="max_posts_per_day"]').value = {{ default_max_posts }};
+    document.querySelector('[name="active_start_hour"]').value = 7;
+    document.querySelector('[name="active_end_hour"]').value = 23;
     document.querySelector('[name="enable_image"]').checked = true;
     document.getElementById('nurtureDialog').showModal();
 }
@@ -435,6 +483,8 @@ async function editNurture(id) {
     document.querySelector('[name="name"]').value = s.name;
     document.querySelector('[name="interval_minutes"]').value = s.interval_minutes;
     document.querySelector('[name="max_posts_per_day"]').value = s.max_posts_per_day;
+    document.querySelector('[name="active_start_hour"]').value = s.active_start_hour ?? 7;
+    document.querySelector('[name="active_end_hour"]').value = s.active_end_hour ?? 23;
     document.querySelector('[name="account_id"]').value = s.account_id || '';
     document.querySelector('[name="content_style"]').value = s.content_style;
     document.querySelector('[name="filter_keywords"]').value = s.filter_keywords;
@@ -475,6 +525,8 @@ document.getElementById('nurtureForm').addEventListener('submit', async (e) => {
     const data = Object.fromEntries(new FormData(form));
     data.interval_minutes = parseInt(data.interval_minutes);
     data.max_posts_per_day = parseInt(data.max_posts_per_day);
+    data.active_start_hour = parseInt(data.active_start_hour);
+    data.active_end_hour = parseInt(data.active_end_hour);
     data.enable_image = data.enable_image === 'true';
     const id = data.id; delete data.id;
     const isEdit = !!id;
@@ -609,6 +661,15 @@ async function deleteTech(id) {
     if (!confirm('确定删除此科技博主任务？')) return;
     await fetch('/api/nurture/tech/schedules/' + id, {method: 'DELETE'});
     loadTechSchedules();
+}
+
+async function toggleFeishu(id, current) {
+    await fetch('/api/nurture/feishu/schedules/' + id, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({is_active: !current})
+    });
+    location.reload();
 }
 
 document.getElementById('techForm').addEventListener('submit', async (e) => {

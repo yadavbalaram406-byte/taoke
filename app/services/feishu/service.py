@@ -154,7 +154,7 @@ async def _already_published_today(account_id: int) -> bool:
                 NurtureRecord.account_id == account_id,
                 NurtureRecord.topic_name == "飞书AI资讯",
                 NurtureRecord.status == "published",
-                NurtureRecord.created_at >= since,
+                NurtureRecord.created_at > since,
             )
         )
         return (result.scalar() or 0) > 0
