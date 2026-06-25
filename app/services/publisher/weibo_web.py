@@ -546,41 +546,71 @@ class WebWeiboPublisher(BasePublisher):
                     """)
                     await asyncio.sleep(0.5)
 
-                    send_btn = page.locator("a:has-text('发送')").first
+                    # 同时匹配「发送」和「发布」，兼容 a / button / [role="button"]
+                    send_btn = page.locator(
+                        "a:has-text('发送'), button:has-text('发送'), "
+                        "[role='button']:has-text('发送'), "
+                        "a:has-text('发布'), button:has-text('发布'), "
+                        "[role='button']:has-text('发布')"
+                    ).first
                     await send_btn.wait_for(state="visible", timeout=5000)
+                    btn_text = await send_btn.inner_text()
                     await asyncio.sleep(0.3)
                     await send_btn.tap(timeout=5000)
                     send_clicked = True
-                    logger.info("已点击发送按钮")
+                    logger.info(f"已点击发送按钮（文字='{btn_text.strip()}'）")
                 except Exception as e:
                     logger.warning(f"tap 发送失败: {e}，尝试 JS 兜底")
 
                 if not send_clicked:
                     try:
+                        # 记录当前页面上的可见按钮/链接文字，便于排查
+                        page_buttons = await page.evaluate("""
+                            () => Array.from(document.querySelectorAll('a, button, [role="button"]'))
+                                .filter(el => el.offsetParent !== null)
+                                .map(el => el.textContent.trim())
+                                .filter(Boolean)
+                                .slice(0, 30)
+                        """)
+                        logger.warning(f"页面可见按钮/链接: {page_buttons}")
+
                         clicked = await page.evaluate("""
                             () => {
-                                const all = document.querySelectorAll('*');
-                                for (const el of all) {
-                                    if (el.textContent.trim() === '发送' && el.children.length === 0
-                                        && el.offsetParent !== null && el.tagName !== 'BODY') {
-                                        el.dispatchEvent(new Event('click', {bubbles: true}));
-                                        return true;
+                                const KEYWORDS = ['发送', '发布'];
+                                // 精确匹配
+                                for (const kw of KEYWORDS) {
+                                    for (const el of document.querySelectorAll('*')) {
+                                        if (el.textContent.trim() === kw && el.children.length === 0
+                                            && el.offsetParent !== null && el.tagName !== 'BODY') {
+                                            el.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                                            return kw + '(精确)';
+                                        }
                                     }
                                 }
-                                for (const el of document.querySelectorAll('a, button, [role="button"]')) {
-                                    if (el.textContent.includes('发送') && el.offsetParent !== null) {
-                                        el.dispatchEvent(new Event('click', {bubbles: true}));
-                                        return true;
+                                // 模糊匹配 a/button
+                                for (const kw of KEYWORDS) {
+                                    for (const el of document.querySelectorAll('a, button, [role="button"]')) {
+                                        if (el.textContent.includes(kw) && el.offsetParent !== null) {
+                                            el.dispatchEvent(new MouseEvent('click', {bubbles: true}));
+                                            return kw + '(模糊)';
+                                        }
                                     }
                                 }
-                                return false;
+                                return null;
                             }
                         """)
                         if not clicked:
+                            # 截图存档，便于人工排查 UI 变化
+                            try:
+                                screenshot_path = f"/tmp/weibo_compose_fail_{int(time.time())}.png"
+                                await page.screenshot(path=screenshot_path, full_page=True)
+                                logger.error(f"发送按钮截图已保存: {screenshot_path}")
+                            except Exception:
+                                pass
                             await browser.close()
                             return PublishResult(success=False, error_message="未找到发送按钮，发布失败")
                         send_clicked = True
-                        logger.info("JS 兜底点击成功")
+                        logger.info(f"JS 兜底点击成功: {clicked}")
                     except Exception as e2:
                         await browser.close()
                         return PublishResult(success=False, error_message=f"点击发送失败: {e2}")
