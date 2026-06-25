@@ -109,7 +109,7 @@ async def execute_nurture_scan(schedule_id: int | None = None):
         logger.warning("[养号] 未扫描到合适话题")
 
 
-async def execute_nurture_publish(schedule_id: int):
+async def execute_nurture_publish(schedule_id: int, skip_delay: bool = False):
     """完整养号发布流程：扫描 → 过滤 → 创作 → 配图 → 发布"""
     config = await _load_schedule(schedule_id)
     if not config:
@@ -167,10 +167,11 @@ async def execute_nurture_publish(schedule_id: int):
         await _touch()
         return
 
-    # 0.5 随机间隔：休眠 0-15 分钟，制造 45-60 分钟的不规则间隔
-    delay = random.randint(0, 15 * 60)
-    logger.info(f"[养号] 随机延迟 {delay} 秒...")
-    await asyncio.sleep(delay)
+    # 0.5 随机间隔：休眠 0-15 分钟，制造 45-60 分钟的不规则间隔（手动触发时跳过）
+    if not skip_delay:
+        delay = random.randint(0, 15 * 60)
+        logger.info(f"[养号] 随机延迟 {delay} 秒...")
+        await asyncio.sleep(delay)
 
     # 1. 检查今日发布配额
     today_count = await _count_today_posts(account_id)

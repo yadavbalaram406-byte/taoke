@@ -328,7 +328,7 @@ async def delete_nurture_schedule(schedule_id: int, db: AsyncSession = Depends(g
 
 @router.post("/schedules/{schedule_id}/run")
 async def run_nurture_now(schedule_id: int):
-    await execute_nurture_publish(schedule_id)
+    await execute_nurture_publish(schedule_id, skip_delay=True)
     return {"ok": True}
 
 
