@@ -169,7 +169,7 @@ async def execute_nurture_publish(schedule_id: int, skip_delay: bool = False):
 
     # 0.5 随机间隔：休眠 0-15 分钟，制造 45-60 分钟的不规则间隔（手动触发时跳过）
     if not skip_delay:
-        delay = random.randint(0, 15 * 60)
+        delay = random.randint(0, 5 * 60)
         logger.info(f"[养号] 随机延迟 {delay} 秒...")
         await asyncio.sleep(delay)
 
