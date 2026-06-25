@@ -115,6 +115,8 @@ let _loginSessionId = null;
 
 async function webLogin() {
     const btn = event.target;
+    // 清掉可能残留的旧轮询定时器，避免多个定时器并发轮询导致「会话已过期」误报
+    if (_loginPollTimer) { clearInterval(_loginPollTimer); _loginPollTimer = null; }
     btn.disabled = true;
     btn.textContent = '启动中...';
 
@@ -155,9 +157,10 @@ async function pollLoginStatus() {
         const data = await resp.json();
 
         if (data.ready) {
-            // 登录成功！
+            // 登录成功！立即清理会话引用，避免后续轮询误报「会话已过期」
             clearInterval(_loginPollTimer);
             _loginPollTimer = null;
+            _loginSessionId = null;
             document.getElementById('qrDialog').close();
 
             // 保存 cookies
