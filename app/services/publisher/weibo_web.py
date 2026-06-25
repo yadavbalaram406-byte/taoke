@@ -119,25 +119,25 @@ class WebWeiboPublisher(BasePublisher):
 
             page = await context.new_page()
 
-            # 直接打开桌面版微博登录页（默认展示二维码区域）
-            logger.info("打开微博PC登录页...")
-            await page.goto(
-                "https://passport.weibo.com/signin/login?entry=mweibo&res=wel&wm=3349",
-                wait_until="networkidle",
-                timeout=20000,
-            )
+            # 打开微博首页（未登录时自动展示扫码登录区）
+            logger.info("打开微博PC首页...")
+            await page.goto("https://weibo.com/", wait_until="networkidle", timeout=20000)
             await asyncio.sleep(3)
             logger.info(f"当前URL: {page.url}")
 
+            # 如果跳转到了登录页，等待加载
+            if "login" in page.url or "passport" in page.url:
+                await asyncio.sleep(2)
+
             # 如果页面有「扫码登录」tab，点击切换
             try:
-                qr_tab = page.locator('a:has-text("扫码登录"), [data-tab="qrcode"], .qr_tab').first
+                qr_tab = page.locator('a:has-text("扫码登录"), [data-tab="qrcode"], .qr_tab, a:has-text("扫码")').first
                 if await qr_tab.count() > 0:
                     await qr_tab.click()
                     await asyncio.sleep(2)
                     logger.info("已切换到扫码登录 tab")
             except Exception as e:
-                logger.info(f"无需切换 tab 或切换失败（忽略）: {e}")
+                logger.info(f"无需切换 tab（忽略）: {e}")
 
             # 等待二维码渲染
             await asyncio.sleep(2)
