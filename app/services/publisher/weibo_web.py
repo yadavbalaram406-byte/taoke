@@ -25,6 +25,11 @@ async def _safe_close(sess: dict):
             await sess["browser"].close()
     except Exception:
         pass
+    try:
+        if "playwright" in sess:
+            await sess["playwright"].stop()
+    except Exception:
+        pass
 
 
 async def _cleanup_expired_sessions():
@@ -93,7 +98,10 @@ class WebWeiboPublisher(BasePublisher):
         """
         await _cleanup_expired_sessions()
 
-        async with async_playwright() as p:
+        # 关键修复：用 .start() 手动管理生命周期，不用 async with
+        # async with 会在函数返回时自动关闭 playwright，连带关掉浏览器
+        p = await async_playwright().start()
+        try:
             browser = await p.chromium.launch(
                 headless=True,
                 args=[
@@ -147,7 +155,7 @@ class WebWeiboPublisher(BasePublisher):
             qr_found = False
 
             for selector in [
-                '#pl_login_form img',           # 登录表单内的图片
+                '#pl_login_form img',
                 '.qrcode_wrap img',
                 '.qrcode img',
                 '[class*="qrcode"] img',
@@ -172,7 +180,7 @@ class WebWeiboPublisher(BasePublisher):
                 except Exception:
                     continue
 
-            # fallback: 截取整个页面（用户可以看到是否在登录页）
+            # fallback: 截取整个页面
             if not qr_found:
                 logger.warning("未定位到二维码元素，截取整页")
                 try:
@@ -184,10 +192,13 @@ class WebWeiboPublisher(BasePublisher):
 
             if not qr_base64:
                 await browser.close()
+                await p.stop()
                 return None
 
             session_id = uuid.uuid4().hex[:16]
+            # 存 playwright 实例，防止被 GC 关闭
             _login_sessions[session_id] = {
+                "playwright": p,
                 "browser": browser,
                 "context": context,
                 "page": page,
@@ -199,6 +210,14 @@ class WebWeiboPublisher(BasePublisher):
                 "session_id": session_id,
                 "qr_code": qr_base64,
             }
+
+        except Exception as e:
+            logger.error(f"start_qr_login 异常: {e}")
+            try:
+                await p.stop()
+            except Exception:
+                pass
+            return None
 
     @staticmethod
     async def check_qr_login(session_id: str) -> dict | None:
@@ -254,8 +273,9 @@ class WebWeiboPublisher(BasePublisher):
                     cookies_json = json.dumps(cookies, ensure_ascii=False)
                     logger.info(f"扫码登录成功! 获取到 {len(cookies)} 个 cookies")
 
-                    # 清理会话
                     await browser.close()
+                    if "playwright" in sess:
+                        await sess["playwright"].stop()
                     _login_sessions.pop(session_id, None)
 
                     return {
@@ -267,6 +287,8 @@ class WebWeiboPublisher(BasePublisher):
             # 检查是否超时（5 分钟）
             if time.time() - sess.get("created_at", 0) > 300:
                 await browser.close()
+                if "playwright" in sess:
+                    await sess["playwright"].stop()
                 _login_sessions.pop(session_id, None)
                 return {"ready": False, "error": "登录超时（5分钟），请重新扫码"}
 
@@ -276,6 +298,11 @@ class WebWeiboPublisher(BasePublisher):
             logger.error(f"检查登录状态异常: {e}")
             try:
                 await browser.close()
+            except Exception:
+                pass
+            try:
+                if "playwright" in sess:
+                    await sess["playwright"].stop()
             except Exception:
                 pass
             _login_sessions.pop(session_id, None)
