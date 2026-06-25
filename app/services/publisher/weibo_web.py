@@ -1,8 +1,43 @@
-import asyncio, json, os, random, time
+import asyncio, base64, json, os, random, time, uuid
 from playwright.async_api import async_playwright
 from loguru import logger
 
 from app.services.publisher.base import BasePublisher, PublishResult
+
+# ====== 登录会话管理（内存中） ======
+_login_sessions: dict[str, dict] = {}  # session_id -> {browser, context, page, created_at}
+
+
+def _cleanup_session(session_id: str):
+    """清理登录会话"""
+    if session_id in _login_sessions:
+        try:
+            sess = _login_sessions.pop(session_id)
+            asyncio.ensure_future(_safe_close(sess))
+        except Exception:
+            pass
+
+
+async def _safe_close(sess: dict):
+    """安全关闭浏览器"""
+    try:
+        if "browser" in sess:
+            await sess["browser"].close()
+    except Exception:
+        pass
+
+
+async def _cleanup_expired_sessions():
+    """清理超过 5 分钟的过期会话"""
+    now = time.time()
+    expired = [
+        sid for sid, s in _login_sessions.items()
+        if now - s.get("created_at", 0) > 300
+    ]
+    for sid in expired:
+        logger.info(f"清理过期登录会话: {sid}")
+        _cleanup_session(sid)
+
 
 # ====== 行为模拟工具 ======
 
@@ -48,18 +83,24 @@ class WebWeiboPublisher(BasePublisher):
         except json.JSONDecodeError:
             return []
 
-    # ====== 登录流程 ======
+    # ====== 扫码登录（VPS headless + 手机扫码） ======
 
     @staticmethod
-    async def login_and_get_cookies() -> dict | None:
+    async def start_qr_login() -> dict | None:
         """
-        打开浏览器让用户手动登录，成功后返回 cookies
-        用户可以用扫码或密码登录
+        启动 headless 浏览器 → 打开微博登录页 → 截取二维码 → 返回 base64 + session_id
+        浏览器会话保持在内存中，等待用户扫码
         """
+        await _cleanup_expired_sessions()
+
         async with async_playwright() as p:
             browser = await p.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled"],
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
             )
             context = await browser.new_context(
                 viewport={"width": 430, "height": 932},
@@ -82,21 +123,191 @@ class WebWeiboPublisher(BasePublisher):
 
             # 打开微博移动端登录页
             logger.info("打开微博登录页...")
+            await page.goto("https://m.weibo.cn", wait_until="domcontentloaded", timeout=15000)
+            await asyncio.sleep(2)
+
+            # 点击登录按钮
+            try:
+                login_btn = page.locator('a[href*="login"], a:has-text("登录"), a:has-text("我的")').first
+                await login_btn.tap(timeout=3000)
+                await asyncio.sleep(3)
+                logger.info(f"已点击登录入口，当前URL: {page.url}")
+            except Exception:
+                pass
+
+            # 等待二维码出现
+            qr_base64 = ""
+            try:
+                # 等待页面加载完成
+                await asyncio.sleep(2)
+                # 尝试截取整个页面的二维码区域
+                # 微博移动端登录页的二维码通常在页面中央
+                qr_element = page.locator('img[src*="qrcode"], img[src*="QR"], canvas, .qrcode img, [class*="qr"] img').first
+                try:
+                    qr_bytes = await qr_element.screenshot(timeout=5000)
+                    qr_base64 = base64.b64encode(qr_bytes).decode()
+                    logger.info("已截取二维码图片")
+                except Exception:
+                    # 退而求其次：截取整个页面
+                    logger.warning("无法定位二维码元素，截取整个页面")
+                    qr_bytes = await page.screenshot(full_page=False)
+                    qr_base64 = base64.b64encode(qr_bytes).decode()
+                    logger.info("已截取整个登录页面")
+            except Exception as e:
+                logger.error(f"截取二维码失败: {e}")
+                # 最后的 fallback：截取可见区域
+                try:
+                    qr_bytes = await page.screenshot(full_page=False)
+                    qr_base64 = base64.b64encode(qr_bytes).decode()
+                except Exception:
+                    pass
+
+            if not qr_base64:
+                await browser.close()
+                return None
+
+            # 生成 session_id 并保存浏览器会话
+            session_id = uuid.uuid4().hex[:16]
+            _login_sessions[session_id] = {
+                "browser": browser,
+                "context": context,
+                "page": page,
+                "created_at": time.time(),
+            }
+
+            logger.info(f"登录会话已创建: {session_id}")
+            return {
+                "session_id": session_id,
+                "qr_code": qr_base64,
+            }
+
+    @staticmethod
+    async def check_qr_login(session_id: str) -> dict | None:
+        """检查扫码登录是否完成，完成则返回 cookies"""
+        await _cleanup_expired_sessions()
+
+        sess = _login_sessions.get(session_id)
+        if not sess:
+            return {"ready": False, "error": "会话已过期，请重新扫码"}
+
+        page = sess["page"]
+        context = sess["context"]
+        browser = sess["browser"]
+
+        try:
+            current_url = page.url
+            logger.info(f"检查登录状态，当前URL: {current_url}")
+
+            # 检查是否已登录（URL 已跳转到 m.weibo.cn 首页）
+            if "m.weibo.cn" in current_url and "passport" not in current_url:
+                await asyncio.sleep(2)
+
+                # 确认登录成功
+                logged_in = False
+                try:
+                    await page.wait_for_selector(
+                        '.avatar, [class*="avatar"], [class*="profile"], .tab, .nav-item, .card',
+                        timeout=5000
+                    )
+                    logged_in = True
+                except Exception:
+                    try:
+                        resp = await page.evaluate("""
+                            async () => {
+                                const r = await fetch('https://m.weibo.cn/api/config');
+                                const d = await r.json();
+                                return d.data ? d.data.uid || true : false;
+                            }
+                        """)
+                        if resp:
+                            logged_in = True
+                    except Exception:
+                        pass
+
+                if logged_in:
+                    cookies = await context.cookies()
+                    cookies_json = json.dumps(cookies, ensure_ascii=False)
+                    logger.info(f"扫码登录成功! 获取到 {len(cookies)} 个 cookies")
+
+                    # 清理会话
+                    await browser.close()
+                    _login_sessions.pop(session_id, None)
+
+                    return {
+                        "ready": True,
+                        "cookies": cookies_json,
+                        "cookie_count": len(cookies),
+                    }
+
+            # 检查是否超时（5 分钟）
+            if time.time() - sess.get("created_at", 0) > 300:
+                await browser.close()
+                _login_sessions.pop(session_id, None)
+                return {"ready": False, "error": "登录超时（5分钟），请重新扫码"}
+
+            return {"ready": False}
+
+        except Exception as e:
+            logger.error(f"检查登录状态异常: {e}")
+            try:
+                await browser.close()
+            except Exception:
+                pass
+            _login_sessions.pop(session_id, None)
+            return {"ready": False, "error": f"检查失败: {e}"}
+
+    @staticmethod
+    async def cancel_qr_login(session_id: str):
+        """取消扫码登录，清理会话"""
+        _cleanup_session(session_id)
+        return {"ok": True}
+
+    @staticmethod
+    async def login_and_get_cookies() -> dict | None:
+        """
+        旧版同步登录（保留兼容）— headless 模式下打开浏览器，截取二维码，等待用户扫码
+        适用于桌面端本地开发（浏览器窗口可见）
+        """
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=[
+                    "--disable-blink-features=AutomationControlled",
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                ],
+            )
+            context = await browser.new_context(
+                viewport={"width": 430, "height": 932},
+                user_agent=(
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                    "Version/17.0 Mobile/15E148 Safari/604.1"
+                ),
+                locale="zh-CN",
+                has_touch=True,
+            )
+
+            await context.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => false});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+            """)
+
+            page = await context.new_page()
+
+            logger.info("打开微博登录页...")
             await page.goto("https://m.weibo.cn", wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-            # 如果未登录，点击登录按钮
             try:
                 login_btn = page.locator('a[href*="login"], a:has-text("登录"), a:has-text("我的")').first
                 await login_btn.tap(timeout=3000)
                 await asyncio.sleep(2)
                 logger.info(f"已点击登录入口，当前URL: {page.url}")
             except Exception:
-                # 可能已经在登录页或已登录
                 pass
 
             # 等待用户完成登录（最多 180 秒）
-            # 登录成功后页面会跳转到 m.weibo.cn 首页
             logger.info("等待用户完成登录 (请用微博App扫码)...")
             try:
                 await page.wait_for_function(
@@ -108,7 +319,6 @@ class WebWeiboPublisher(BasePublisher):
             except Exception as e:
                 logger.warning(f"登录等待超时: {e}")
 
-            # 检查是否登录成功：查找用户相关元素
             logged_in = False
             try:
                 await page.wait_for_selector(
@@ -118,7 +328,6 @@ class WebWeiboPublisher(BasePublisher):
                 logged_in = True
                 logger.info("检测到登录成功标志")
             except Exception:
-                # 替代检查：尝试访问 API 看是否返回用户信息
                 try:
                     resp = await page.evaluate("""
                         async () => {
@@ -138,7 +347,6 @@ class WebWeiboPublisher(BasePublisher):
                 await browser.close()
                 return None
 
-            # 获取 cookies
             cookies = await context.cookies()
             await browser.close()
 
@@ -156,7 +364,6 @@ class WebWeiboPublisher(BasePublisher):
 
         try:
             import httpx
-            # 转换 cookie 格式：从 Playwright cookies 到 httpx cookies
             cookie_dict = {}
             for c in cookies:
                 cookie_dict[c.get("name", "")] = c.get("value", "")
@@ -212,13 +419,12 @@ class WebWeiboPublisher(BasePublisher):
 
                 page = await context.new_page()
 
-                # Step 1: 先逛首页，再进发微博页面（模拟真人路径，避免直接访问compose被识别为机器人）
+                # Step 1: 先逛首页，再进发微博页面
                 logger.info("打开微博首页...")
                 await page.goto("https://m.weibo.cn", wait_until="domcontentloaded", timeout=15000)
                 await asyncio.sleep(human_delay(1500, 3000))
                 await human_scroll(page)
 
-                # 如果被重定向到验证页则Cookie无效
                 if "passport" in page.url or "visitor" in page.url:
                     await browser.close()
                     return PublishResult(success=False, error_message="Cookie已过期，请重新扫码登录")
@@ -228,13 +434,12 @@ class WebWeiboPublisher(BasePublisher):
                     compose_btn = page.locator('a[href*="compose"], [class*="compose"], .m-compose-btn').first
                     await compose_btn.tap(timeout=5000)
                 except Exception:
-                    # fallback: 直接导航
                     await page.goto("https://m.weibo.cn/compose/", wait_until="domcontentloaded", timeout=15000)
 
                 await asyncio.sleep(human_delay(800, 1500))
                 await human_scroll(page)
 
-                # Step 2: 逐字慢速输入（模拟真人手机打字）
+                # Step 2: 逐字慢速输入
                 logger.info(f"输入微博文字({len(content)}字)...")
                 try:
                     textarea = page.locator("textarea").first
@@ -242,23 +447,17 @@ class WebWeiboPublisher(BasePublisher):
                     await textarea.click()
                     await asyncio.sleep(random.uniform(0.3, 0.8))
 
-                    # 逐行输入，每行逐字敲，行间有 Enter + 停顿
                     sentences = content.split('\n')
                     for si, sentence in enumerate(sentences):
                         if si > 0:
-                            # 换行
                             await page.keyboard.press("Enter")
                             await asyncio.sleep(random.uniform(0.3, 0.8))
 
                         if not sentence.strip():
                             continue
 
-                        # 用 type 逐字输入，每个字 80-200ms 间隔
                         await page.keyboard.type(sentence, delay=random.randint(80, 200))
-
-                        # 句末停顿
                         await asyncio.sleep(random.uniform(0.5, 1.5))
-                        # 偶尔思考久一点
                         if random.random() < 0.15:
                             await asyncio.sleep(random.uniform(1.0, 2.5))
 
@@ -267,9 +466,9 @@ class WebWeiboPublisher(BasePublisher):
                     await browser.close()
                     return PublishResult(success=False, error_message=f"输入文字失败: {e}")
 
-                # Step 3: 上传图片（如果有）
+                # Step 3: 上传图片
                 if images and len(images) > 0:
-                    for img_path in images[:1]:  # 每次只发一张
+                    for img_path in images[:1]:
                         try:
                             abs_path = os.path.abspath(img_path)
                             if not os.path.exists(abs_path):
@@ -285,11 +484,10 @@ class WebWeiboPublisher(BasePublisher):
 
                 await human_scroll(page)
 
-                # Step 4: 点击发送按钮
+                # Step 4: 点击发送
                 logger.info("点击发送...")
                 send_clicked = False
                 try:
-                    # 清除可能的遮挡层
                     await page.evaluate("""
                         () => {
                             const sel = '[class*="overlay"], [class*="mask"], [class*="popup"], [class*="modal"], [class*="toast"]';
@@ -298,9 +496,7 @@ class WebWeiboPublisher(BasePublisher):
                     """)
                     await asyncio.sleep(0.5)
 
-                    # 用 text 精确匹配发送按钮（比 class 选择器更可靠）
                     send_btn = page.locator("a:has-text('发送')").first
-                    # 等按钮可见且可点击
                     await send_btn.wait_for(state="visible", timeout=5000)
                     await asyncio.sleep(0.3)
                     await send_btn.tap(timeout=5000)
@@ -321,7 +517,6 @@ class WebWeiboPublisher(BasePublisher):
                                         return true;
                                     }
                                 }
-                                // 再搜 a/button 包含"发送"
                                 for (const el of document.querySelectorAll('a, button, [role="button"]')) {
                                     if (el.textContent.includes('发送') && el.offsetParent !== null) {
                                         el.dispatchEvent(new Event('click', {bubbles: true}));
@@ -340,19 +535,17 @@ class WebWeiboPublisher(BasePublisher):
                         await browser.close()
                         return PublishResult(success=False, error_message=f"点击发送失败: {e2}")
 
-                # Step 5: 等待发布结果（m.weibo.cn 是 SPA，发完仍留在 compose 页面）
+                # Step 5: 等待结果
                 logger.info("等待发布完成...")
                 await asyncio.sleep(5)
 
                 current_url = page.url
                 logger.info(f"发布后URL: {current_url}")
 
-                # Cookie 失效
                 if "passport" in current_url or "visitor" in current_url:
                     await browser.close()
                     return PublishResult(success=False, error_message="Cookie已过期，请重新扫码登录")
 
-                # 信号 1: 离开 compose → 肯定成功
                 if "compose" not in current_url:
                     import re as _re
                     post_id = None
@@ -363,7 +556,6 @@ class WebWeiboPublisher(BasePublisher):
                     await browser.close()
                     return PublishResult(success=True, external_id=post_id or "web", external_url=current_url)
 
-                # 信号 2: 仍在 compose，检测成功提示（toast 弹窗等）
                 success_detected = await page.evaluate("""
                     () => {
                         const text = (document.body.innerText || '').slice(0, 600);
@@ -385,15 +577,10 @@ class WebWeiboPublisher(BasePublisher):
                     await browser.close()
                     return PublishResult(success=True, external_id="web", external_url=current_url)
 
-                # 信号 3: React 内容长度检测
-                # m.weibo.cn 是 SPA，textarea.value 始终为空（React state 管理内容）。
-                # 改用 innerText / textContent 读取实际显示内容，再与原文比对。
-                # 若显示内容为空或已大幅缩短，推断发送成功后被清空。
                 textarea_visible_len = await page.evaluate("""
                     () => {
                         const ta = document.querySelector('textarea');
                         if (!ta) return null;
-                        // 优先取父级编辑容器的 innerText（React 渲染的可见文字）
                         const container = ta.closest('[class*="weibo-lite"], [class*="editor"], [class*="compose"]')
                             || ta.parentElement;
                         const visible = (container ? container.innerText : ta.innerText || '').trim();
@@ -401,9 +588,6 @@ class WebWeiboPublisher(BasePublisher):
                     }
                 """)
 
-                # visible_len 为 null（找不到 textarea）→ 信号不明
-                # visible_len == 0 → 内容已被清空，推断成功
-                # visible_len > 0 → 内容仍在，说明发送未触发
                 if textarea_visible_len == 0:
                     logger.info("编辑区内容已清空，推断发布成功")
                     await browser.close()
@@ -414,7 +598,6 @@ class WebWeiboPublisher(BasePublisher):
                     await browser.close()
                     return PublishResult(success=False, error_message="发送未生效：编辑区仍有内容，请手动检查微博主页")
 
-                # 信号不明 → 保守处理：标记失败
                 await browser.close()
                 logger.warning("无法确认发布状态，标记为失败")
                 return PublishResult(success=False, error_message="无法确认发布状态，请到微博主页确认")

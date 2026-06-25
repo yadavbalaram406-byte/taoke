@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy import select
 from loguru import logger
@@ -16,9 +16,42 @@ class SaveCookiesRequest(BaseModel):
     uid: str = ""
 
 
+# ====== 新版：QR 码扫码登录（VPS headless + 手机扫码） ======
+
+@router.post("/login/start")
+async def start_qr_login():
+    """启动 headless 浏览器 → 截取微博登录二维码 → 返回 base64 图片 + session_id"""
+    result = await WebWeiboPublisher.start_qr_login()
+    if not result:
+        raise HTTPException(status_code=500, detail="无法打开微博登录页，请重试")
+    return {
+        "ok": True,
+        "session_id": result["session_id"],
+        "qr_code": result["qr_code"],
+        "message": "请用微博App扫描二维码",
+    }
+
+
+@router.get("/login/check")
+async def check_qr_login(session_id: str = Query(...)):
+    """检查扫码登录是否完成"""
+    result = await WebWeiboPublisher.check_qr_login(session_id)
+    if result is None:
+        return {"ready": False, "error": "会话不存在"}
+    return result
+
+
+@router.post("/login/cancel")
+async def cancel_qr_login(session_id: str = Query(...)):
+    """取消扫码登录"""
+    return await WebWeiboPublisher.cancel_qr_login(session_id)
+
+
+# ====== 旧版兼容 ======
+
 @router.post("/login")
 async def web_login():
-    """打开浏览器进行微博扫码登录，返回 cookies"""
+    """旧版同步登录（保留兼容）— headless 模式下等待扫码"""
     result = await WebWeiboPublisher.login_and_get_cookies()
     if not result:
         raise HTTPException(status_code=500, detail="登录失败或超时")
@@ -35,10 +68,8 @@ async def web_login():
     uid = ""
     try:
         async with httpx.AsyncClient(timeout=10, cookies=cookie_dict) as client:
-            # Step 1: 拿 uid
             cfg = (await client.get("https://m.weibo.cn/api/config", headers=headers)).json()
             uid = str(cfg.get("data", {}).get("uid", ""))
-            # Step 2: 用 uid 拿昵称
             if uid:
                 profile = (await client.get(
                     f"https://m.weibo.cn/api/container/getIndex?containerid=100505{uid}&type=uid&value={uid}",
@@ -57,6 +88,8 @@ async def web_login():
         "message": "登录成功！",
     }
 
+
+# ====== Cookie 保存 & 验证 ======
 
 @router.post("/accounts/{account_id}/save-cookies")
 async def save_cookies(account_id: int, req: SaveCookiesRequest):
@@ -81,14 +114,13 @@ async def save_cookies(account_id: int, req: SaveCookiesRequest):
 
         logger.info(f"已保存账号 {account.name} 的 cookies")
 
-        # 验证 cookies 是否有效
         publisher = WebWeiboPublisher(cookies_json=cookies)
         valid = await publisher.check_token()
         return {"ok": True, "cookies_valid": valid, "message": "Cookies 已保存" + (" (验证有效)" if valid else " (可能已过期)")}
 
 
 @router.get("/check")
-async def check_web_cookies(account_id: int):
+async def check_web_cookies(account_id: int = Query(...)):
     """验证指定账号的 cookies 是否有效"""
     async with async_session() as session:
         result = await session.execute(select(Account).where(Account.id == account_id))

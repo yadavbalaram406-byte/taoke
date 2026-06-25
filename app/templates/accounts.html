@@ -3,7 +3,7 @@
 <h2>👤 账号管理</h2>
 
 <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;">
-    <button class="btn btn-primary" onclick="webLogin()" style="background:#ff8200;border-color:#ff8200;">
+    <button id="btnWeiboLogin" class="btn btn-primary" onclick="webLogin()" style="background:#ff8200;border-color:#ff8200;">
         📱 扫码登录微博
     </button>
     <button class="btn" onclick="showForm()">✏️ 手动添加</button>
@@ -66,6 +66,19 @@
 <p class="empty">暂无绑定账号，点击上方「授权绑定微博」开始</p>
 {% endif %}
 
+<!-- 二维码扫码登录弹窗 -->
+<dialog id="qrDialog">
+    <div style="text-align:center;max-width:320px;">
+        <h3 style="margin-bottom:12px;">📱 请用微博App扫码</h3>
+        <img id="qrCodeImg" src="" alt="微博登录二维码" style="width:100%;max-width:280px;border-radius:8px;border:1px solid #eee;">
+        <p style="font-size:12px;color:#888;margin-top:10px;">打开微博App → 扫一扫 → 确认登录</p>
+        <p style="font-size:11px;color:#aaa;margin-top:4px;">二维码有效期 5 分钟</p>
+        <div class="form-actions" style="justify-content:center;margin-top:16px;">
+            <button type="button" class="btn" onclick="cancelQrLogin()">取消</button>
+        </div>
+    </div>
+</dialog>
+
 <dialog id="accountDialog">
     <form id="accountForm" method="dialog">
         <h3 id="dialogTitle">绑定账号</h3>
@@ -96,50 +109,104 @@
 </dialog>
 
 <script>
-// ===== Web 扫码登录 =====
+// ===== Web 扫码登录（VPS headless + 手机扫码） =====
+let _loginPollTimer = null;
+let _loginSessionId = null;
+
 async function webLogin() {
     const btn = event.target;
     btn.disabled = true;
-    btn.textContent = '浏览器启动中...';
+    btn.textContent = '启动中...';
 
     try {
-        // 先触发扫码登录，拿到 cookies + 昵称
-        btn.textContent = '请在弹出的浏览器中扫码登录...';
-        const loginResp = await fetch('/api/weibo-web/login', {method: 'POST'});
-        const loginData = await loginResp.json();
+        const resp = await fetch('/api/weibo-web/login/start', {method: 'POST'});
+        const data = await resp.json();
 
-        if (!loginData.ok) {
-            alert('登录失败');
+        if (!data.ok) {
+            alert('启动登录失败: ' + (data.detail || '未知错误'));
+            btn.disabled = false;
+            btn.textContent = '📱 扫码登录微博';
             return;
         }
 
-        // 用昵称作为账号名，拿不到则用默认值
-        const accountName = loginData.screen_name || '微博账号';
+        _loginSessionId = data.session_id;
 
-        btn.textContent = '保存中...';
+        // 显示二维码
+        const qrImg = document.getElementById('qrCodeImg');
+        qrImg.src = 'data:image/png;base64,' + data.qr_code;
+        document.getElementById('qrDialog').showModal();
 
-        // 创建账号并保存 cookies
-        const respAcc = await fetch('/api/accounts', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({platform: 'weibo', name: accountName, is_active: false})
-        });
-        const account = await respAcc.json();
+        btn.textContent = '请扫码...';
 
-        const saveResp = await fetch('/api/weibo-web/accounts/' + account.id + '/save-cookies', {
-            method: 'POST',
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({cookies: loginData.cookies, name: accountName, uid: loginData.uid || ''})
-        });
-        const saveData = await saveResp.json();
-
-        alert(saveData.message);
-        location.reload();
+        // 开始轮询
+        _loginPollTimer = setInterval(pollLoginStatus, 2000);
     } catch(e) {
-        alert('登录失败: ' + e.message);
+        alert('启动登录失败: ' + e.message);
+        btn.disabled = false;
+        btn.textContent = '📱 扫码登录微博';
     }
-    btn.disabled = false;
-    btn.textContent = '📱 扫码登录微博';
+}
+
+async function pollLoginStatus() {
+    if (!_loginSessionId) return;
+
+    try {
+        const resp = await fetch('/api/weibo-web/login/check?session_id=' + _loginSessionId);
+        const data = await resp.json();
+
+        if (data.ready) {
+            // 登录成功！
+            clearInterval(_loginPollTimer);
+            _loginPollTimer = null;
+            document.getElementById('qrDialog').close();
+
+            // 保存 cookies
+            const accountName = data.screen_name || '微博账号';
+            const btn = document.getElementById('btnWeiboLogin');
+            if (btn) { btn.textContent = '保存中...'; }
+
+            const respAcc = await fetch('/api/accounts', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({platform: 'weibo', name: accountName, is_active: false})
+            });
+            const account = await respAcc.json();
+
+            const saveResp = await fetch('/api/weibo-web/accounts/' + account.id + '/save-cookies', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({cookies: data.cookies, name: accountName, uid: data.uid || ''})
+            });
+            const saveData = await saveResp.json();
+            alert(saveData.message);
+            location.reload();
+        } else if (data.error) {
+            // 出错或超时
+            clearInterval(_loginPollTimer);
+            _loginPollTimer = null;
+            document.getElementById('qrDialog').close();
+            alert('登录失败: ' + data.error);
+            const btn = document.getElementById('btnWeiboLogin');
+            if (btn) { btn.disabled = false; btn.textContent = '📱 扫码登录微博'; }
+        }
+    } catch(e) {
+        // 网络错误，继续轮询
+        console.error('轮询错误:', e);
+    }
+}
+
+function cancelQrLogin() {
+    if (_loginPollTimer) {
+        clearInterval(_loginPollTimer);
+        _loginPollTimer = null;
+    }
+    if (_loginSessionId) {
+        fetch('/api/weibo-web/login/cancel?session_id=' + _loginSessionId, {method: 'POST'}).catch(() => {});
+        _loginSessionId = null;
+    }
+    document.getElementById('qrDialog').close();
+    const btn = document.getElementById('btnWeiboLogin');
+    if (btn) { btn.disabled = false; btn.textContent = '📱 扫码登录微博'; }
 }
 
 // ===== 验证 =====
