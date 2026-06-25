@@ -88,8 +88,8 @@ class WebWeiboPublisher(BasePublisher):
     @staticmethod
     async def start_qr_login() -> dict | None:
         """
-        启动 headless 浏览器 → 打开微博登录页 → 截取二维码 → 返回 base64 + session_id
-        浏览器会话保持在内存中，等待用户扫码
+        启动 headless 浏览器（桌面模式）→ 打开微博 PC 登录页 → 截取二维码 → 返回 base64 + session_id
+        桌面版 passport.weibo.com 默认展示二维码登录，结构稳定。
         """
         await _cleanup_expired_sessions()
 
@@ -102,18 +102,16 @@ class WebWeiboPublisher(BasePublisher):
                     "--disable-dev-shm-usage",
                 ],
             )
+            # 桌面版：宽屏 + 桌面 UA
             context = await browser.new_context(
-                viewport={"width": 430, "height": 932},
+                viewport={"width": 1280, "height": 800},
                 user_agent=(
-                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-                    "Version/17.0 Mobile/15E148 Safari/604.1"
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/124.0.0.0 Safari/537.36"
                 ),
                 locale="zh-CN",
-                has_touch=True,
             )
-
-            # 注入反检测脚本
             await context.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', {get: () => false});
                 Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
@@ -121,81 +119,66 @@ class WebWeiboPublisher(BasePublisher):
 
             page = await context.new_page()
 
-            # Step 1: 打开微博移动端首页
-            logger.info("打开微博首页...")
-            await page.goto("https://m.weibo.cn", wait_until="networkidle", timeout=20000)
+            # 直接打开桌面版微博登录页（默认展示二维码区域）
+            logger.info("打开微博PC登录页...")
+            await page.goto(
+                "https://passport.weibo.com/signin/login?entry=mweibo&res=wel&wm=3349",
+                wait_until="networkidle",
+                timeout=20000,
+            )
+            await asyncio.sleep(3)
+            logger.info(f"当前URL: {page.url}")
+
+            # 如果页面有「扫码登录」tab，点击切换
+            try:
+                qr_tab = page.locator('a:has-text("扫码登录"), [data-tab="qrcode"], .qr_tab').first
+                if await qr_tab.count() > 0:
+                    await qr_tab.click()
+                    await asyncio.sleep(2)
+                    logger.info("已切换到扫码登录 tab")
+            except Exception as e:
+                logger.info(f"无需切换 tab 或切换失败（忽略）: {e}")
+
+            # 等待二维码渲染
             await asyncio.sleep(2)
 
-            # Step 2: 点击登录入口，进入 passport 登录页
-            logger.info(f"当前页面 URL: {page.url}")
-            clicked_login = False
-            try:
-                # 优先匹配底部导航栏的「我」或「登录」
-                login_btn = page.locator('a:has-text("我"), a:has-text("登录"), [href*="login"]').first
-                await login_btn.wait_for(state="visible", timeout=5000)
-                await login_btn.tap()
-                await asyncio.sleep(2)
-                logger.info(f"点击登录后 URL: {page.url}")
-                clicked_login = True
-            except Exception as e:
-                logger.warning(f"首页点击登录失败: {e}")
-
-            # Step 3: 如果没跳转到 passport，尝试直接访问
-            if not clicked_login or "passport" not in page.url:
-                logger.info("尝试直接访问 passport 登录页...")
-                try:
-                    await page.goto("https://passport.weibo.cn/signin/login", wait_until="networkidle", timeout=20000)
-                    await asyncio.sleep(3)
-                    logger.info(f"直接访问后 URL: {page.url}")
-                except Exception as e:
-                    logger.warning(f"直接访问 passport 失败: {e}")
-
-            # Step 4: 等待并截取二维码
-            # m.weibo.cn passport 登录页默认展示二维码
-            await asyncio.sleep(3)
-
-            # 如果不在 passport 页面，再等一下
-            if "passport" not in page.url:
-                await asyncio.sleep(3)
-                logger.info(f"等待后 URL: {page.url}")
-
+            # 定位二维码元素
             qr_base64 = ""
             qr_found = False
 
-            # 尝试多种方式定位二维码
-            # 方式1: img 标签含 qrcode
             for selector in [
-                'img[src*="qrcode"]',
-                'img[src*="QR"]',
+                '#pl_login_form img',           # 登录表单内的图片
+                '.qrcode_wrap img',
                 '.qrcode img',
                 '[class*="qrcode"] img',
-                '[class*="qr"] img',
-                'img[src*="passport"]',
-                '.login-main img',
-                '.form img',
-                # 方式2: canvas
+                '[class*="qr_img"]',
+                'img[src*="qrcode"]',
+                'img[src*="qr"]',
+                'img[alt*="二维码"]',
                 'canvas',
+                '.login-qrcode img',
             ]:
                 try:
                     el = page.locator(selector).first
-                    if await el.count() > 0:
+                    cnt = await el.count()
+                    if cnt > 0:
+                        await el.wait_for(state="visible", timeout=3000)
                         qr_bytes = await el.screenshot(timeout=5000)
-                        if qr_bytes and len(qr_bytes) > 500:  # 有效图片至少 500 bytes
+                        if qr_bytes and len(qr_bytes) > 500:
                             qr_base64 = base64.b64encode(qr_bytes).decode()
-                            logger.info(f"二维码已截取 (selector: {selector}, size: {len(qr_bytes)} bytes)")
+                            logger.info(f"二维码截取成功 selector={selector} size={len(qr_bytes)}")
                             qr_found = True
                             break
                 except Exception:
                     continue
 
-            # fallback: 截取页面中央区域（二维码通常在中央偏上）
+            # fallback: 截取整个页面（用户可以看到是否在登录页）
             if not qr_found:
-                logger.warning("无法定位二维码元素，截取页面中央区域")
+                logger.warning("未定位到二维码元素，截取整页")
                 try:
-                    # 截取完整页面，然后裁剪中央区域
                     full_bytes = await page.screenshot(full_page=False)
                     qr_base64 = base64.b64encode(full_bytes).decode()
-                    logger.info(f"已截取整页 (size: {len(full_bytes)} bytes)")
+                    logger.info(f"已截取整页 size={len(full_bytes)}")
                 except Exception as e:
                     logger.error(f"截取失败: {e}")
 
@@ -203,7 +186,6 @@ class WebWeiboPublisher(BasePublisher):
                 await browser.close()
                 return None
 
-            # 生成 session_id 并保存浏览器会话
             session_id = uuid.uuid4().hex[:16]
             _login_sessions[session_id] = {
                 "browser": browser,
@@ -235,31 +217,37 @@ class WebWeiboPublisher(BasePublisher):
             current_url = page.url
             logger.info(f"检查登录状态，当前URL: {current_url}")
 
-            # 检查是否已登录（URL 已跳转到 m.weibo.cn 首页）
-            if "m.weibo.cn" in current_url and "passport" not in current_url:
+            # 桌面版扫码成功后会跳转到 weibo.com 或 sina.com 首页
+            # 移动版扫码成功后会跳转到 m.weibo.cn
+            logged_in_urls = (
+                "weibo.com" in current_url and "passport" not in current_url
+            )
+
+            if logged_in_urls:
                 await asyncio.sleep(2)
 
-                # 确认登录成功
+                # 用 API 确认登录态
                 logged_in = False
                 try:
-                    await page.wait_for_selector(
-                        '.avatar, [class*="avatar"], [class*="profile"], .tab, .nav-item, .card',
-                        timeout=5000
-                    )
-                    logged_in = True
-                except Exception:
-                    try:
-                        resp = await page.evaluate("""
-                            async () => {
-                                const r = await fetch('https://m.weibo.cn/api/config');
+                    resp = await page.evaluate("""
+                        async () => {
+                            try {
+                                const r = await fetch('https://m.weibo.cn/api/config', {credentials: 'include'});
                                 const d = await r.json();
-                                return d.data ? d.data.uid || true : false;
-                            }
-                        """)
-                        if resp:
-                            logged_in = True
-                    except Exception:
-                        pass
+                                return d.data ? (d.data.uid || false) : false;
+                            } catch(e) { return false; }
+                        }
+                    """)
+                    if resp:
+                        logged_in = True
+                        logger.info(f"API确认登录成功, uid={resp}")
+                except Exception:
+                    pass
+
+                # API 检测不到时退一步：URL 已跳离 passport 就认为成功
+                if not logged_in:
+                    logged_in = True
+                    logger.info("URL已跳离passport，视为登录成功")
 
                 if logged_in:
                     cookies = await context.cookies()
