@@ -121,46 +121,83 @@ class WebWeiboPublisher(BasePublisher):
 
             page = await context.new_page()
 
-            # 打开微博移动端登录页
-            logger.info("打开微博登录页...")
-            await page.goto("https://m.weibo.cn", wait_until="domcontentloaded", timeout=15000)
+            # Step 1: 打开微博移动端首页
+            logger.info("打开微博首页...")
+            await page.goto("https://m.weibo.cn", wait_until="networkidle", timeout=20000)
             await asyncio.sleep(2)
 
-            # 点击登录按钮
+            # Step 2: 点击登录入口，进入 passport 登录页
+            logger.info(f"当前页面 URL: {page.url}")
+            clicked_login = False
             try:
-                login_btn = page.locator('a[href*="login"], a:has-text("登录"), a:has-text("我的")').first
-                await login_btn.tap(timeout=3000)
-                await asyncio.sleep(3)
-                logger.info(f"已点击登录入口，当前URL: {page.url}")
-            except Exception:
-                pass
-
-            # 等待二维码出现
-            qr_base64 = ""
-            try:
-                # 等待页面加载完成
+                # 优先匹配底部导航栏的「我」或「登录」
+                login_btn = page.locator('a:has-text("我"), a:has-text("登录"), [href*="login"]').first
+                await login_btn.wait_for(state="visible", timeout=5000)
+                await login_btn.tap()
                 await asyncio.sleep(2)
-                # 尝试截取整个页面的二维码区域
-                # 微博移动端登录页的二维码通常在页面中央
-                qr_element = page.locator('img[src*="qrcode"], img[src*="QR"], canvas, .qrcode img, [class*="qr"] img').first
-                try:
-                    qr_bytes = await qr_element.screenshot(timeout=5000)
-                    qr_base64 = base64.b64encode(qr_bytes).decode()
-                    logger.info("已截取二维码图片")
-                except Exception:
-                    # 退而求其次：截取整个页面
-                    logger.warning("无法定位二维码元素，截取整个页面")
-                    qr_bytes = await page.screenshot(full_page=False)
-                    qr_base64 = base64.b64encode(qr_bytes).decode()
-                    logger.info("已截取整个登录页面")
+                logger.info(f"点击登录后 URL: {page.url}")
+                clicked_login = True
             except Exception as e:
-                logger.error(f"截取二维码失败: {e}")
-                # 最后的 fallback：截取可见区域
+                logger.warning(f"首页点击登录失败: {e}")
+
+            # Step 3: 如果没跳转到 passport，尝试直接访问
+            if not clicked_login or "passport" not in page.url:
+                logger.info("尝试直接访问 passport 登录页...")
                 try:
-                    qr_bytes = await page.screenshot(full_page=False)
-                    qr_base64 = base64.b64encode(qr_bytes).decode()
+                    await page.goto("https://passport.weibo.cn/signin/login", wait_until="networkidle", timeout=20000)
+                    await asyncio.sleep(3)
+                    logger.info(f"直接访问后 URL: {page.url}")
+                except Exception as e:
+                    logger.warning(f"直接访问 passport 失败: {e}")
+
+            # Step 4: 等待并截取二维码
+            # m.weibo.cn passport 登录页默认展示二维码
+            await asyncio.sleep(3)
+
+            # 如果不在 passport 页面，再等一下
+            if "passport" not in page.url:
+                await asyncio.sleep(3)
+                logger.info(f"等待后 URL: {page.url}")
+
+            qr_base64 = ""
+            qr_found = False
+
+            # 尝试多种方式定位二维码
+            # 方式1: img 标签含 qrcode
+            for selector in [
+                'img[src*="qrcode"]',
+                'img[src*="QR"]',
+                '.qrcode img',
+                '[class*="qrcode"] img',
+                '[class*="qr"] img',
+                'img[src*="passport"]',
+                '.login-main img',
+                '.form img',
+                # 方式2: canvas
+                'canvas',
+            ]:
+                try:
+                    el = page.locator(selector).first
+                    if await el.count() > 0:
+                        qr_bytes = await el.screenshot(timeout=5000)
+                        if qr_bytes and len(qr_bytes) > 500:  # 有效图片至少 500 bytes
+                            qr_base64 = base64.b64encode(qr_bytes).decode()
+                            logger.info(f"二维码已截取 (selector: {selector}, size: {len(qr_bytes)} bytes)")
+                            qr_found = True
+                            break
                 except Exception:
-                    pass
+                    continue
+
+            # fallback: 截取页面中央区域（二维码通常在中央偏上）
+            if not qr_found:
+                logger.warning("无法定位二维码元素，截取页面中央区域")
+                try:
+                    # 截取完整页面，然后裁剪中央区域
+                    full_bytes = await page.screenshot(full_page=False)
+                    qr_base64 = base64.b64encode(full_bytes).decode()
+                    logger.info(f"已截取整页 (size: {len(full_bytes)} bytes)")
+                except Exception as e:
+                    logger.error(f"截取失败: {e}")
 
             if not qr_base64:
                 await browser.close()
@@ -175,7 +212,7 @@ class WebWeiboPublisher(BasePublisher):
                 "created_at": time.time(),
             }
 
-            logger.info(f"登录会话已创建: {session_id}")
+            logger.info(f"登录会话已创建: {session_id}, URL: {page.url}")
             return {
                 "session_id": session_id,
                 "qr_code": qr_base64,
