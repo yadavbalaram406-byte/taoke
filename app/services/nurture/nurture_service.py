@@ -231,7 +231,7 @@ async def execute_nurture_publish(schedule_id: int, skip_delay: bool = False):
         logger.info(f"体育赛事话题，强制 remix: {best.name}")
 
     # 6. 创作文案
-    writer = NurtureWriter(style=content_style)
+    writer = NurtureWriter(style=content_style, cookies=cookies)
     content = await writer.generate(best.name, best.desc, use_remix=use_remix)
     logger.info(f"[养号] 文案生成完成 ({len(content)}字)")
 

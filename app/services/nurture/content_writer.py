@@ -1,7 +1,9 @@
 """AI 养号文案生成器 — 基于热搜话题创作有观点、有互动的微博"""
 import asyncio
+import re as _re
 import httpx
 import random
+from urllib.parse import quote
 from loguru import logger
 
 from app.config import settings
@@ -20,7 +22,34 @@ PUBLISH_BLOCK_KW = [
 ]
 
 
-# 所有风格通用的防幻觉约束
+# 有真实热帖上下文时的 prompt（AI 参考真实内容写）
+CONTEXT_PROMPT = {
+    "knowledge": (
+        "以下是微博话题「{topic}」当前的热门博文（这是真实的当前内容，请以此为准）：\n\n"
+        "{posts}\n\n"
+        "---\n"
+        "你是一个知识型微博博主。请参考上面真实内容了解话题背景，从中提炼有信息量的观点写一条微博。\n"
+        "要求：\n"
+        "1. 不要复制上面的内容，要有自己的视角\n"
+        "2. 提供知识增量或有价值的分析\n"
+        "3. 140字以内，表达通俗易懂\n"
+        "4. 不要编造上面没有提到的具体数据\n"
+        "直接输出微博文案，不要加前缀说明。"
+    ),
+    "warm": (
+        "以下是微博话题「{topic}」当前的热门博文（这是真实的当前内容，请以此为准）：\n\n"
+        "{posts}\n\n"
+        "---\n"
+        "你是一个温暖治愈的微博博主。请参考上面真实内容了解话题背景，从温暖正面的角度写一条微博。\n"
+        "要求：\n"
+        "1. 给读者带来力量或安慰，语言柔软有温度\n"
+        "2. 120字以内，真诚不鸡汤\n"
+        "3. 不要编造上面没有提到的具体数据\n"
+        "直接输出微博文案，不要加前缀说明。"
+    ),
+}
+
+# 无上下文时的兜底 prompt（加强防幻觉约束）
 SAFETY_RULES = (
     "【严格约束，违反即失败】\n"
     "1. 这是一个微博实时热搜话题。你无法知道它对应的具体是哪届赛事、哪次事件或哪场比赛。\n"
@@ -60,140 +89,111 @@ STYLE_PROMPTS = {
 class NurtureWriter:
     """养号内容创作器"""
 
-    def __init__(self, style: str = "knowledge"):
+    def __init__(self, style: str = "knowledge", cookies: dict | None = None):
         self.style = style if style in STYLE_PROMPTS else "knowledge"
+        self.cookies = cookies or {}
 
     async def generate(self, topic: str, topic_desc: str = "", use_remix: bool = False) -> str:
-        """生成养号微博文案（自动追加 #话题词#）。use_remix=True 时改写热搜广场爆款。"""
-        if use_remix:
-            content = await self._generate_remix(topic)
-            if content:
-                if self._is_risky(content):
-                    logger.warning("[安全审查] remix 内容违规，回退常规生成")
-                else:
-                    return self._append_topic_tag(content, topic)
-            logger.info("remix 失败，回退到常规生成")
-
-        prompt = STYLE_PROMPTS[self.style].format(
-            topic=topic,
-            desc=topic_desc or "微博热搜话题，参考话题页了解具体内容",
-        )
-
-        # 依次尝试各个 AI provider（DeepSeek → Claude → OpenAI），失败时降级到下一个
-        if settings.DEEPSEEK_API_KEY:
-            content = await self._call_deepseek(prompt)
-            if content is None and settings.ANTHROPIC_API_KEY and "your_anthropic" not in settings.ANTHROPIC_API_KEY:
-                logger.warning("DeepSeek 失败，降级到 Claude")
-                content = await self._call_claude(prompt)
-            if content is None and settings.OPENAI_API_KEY and "your_openai" not in settings.OPENAI_API_KEY:
-                logger.warning("Claude 也失败，降级到 OpenAI")
-                content = await self._call_openai(prompt)
-        elif settings.ANTHROPIC_API_KEY and "your_anthropic" not in settings.ANTHROPIC_API_KEY:
-            content = await self._call_claude(prompt)
-            if content is None and settings.OPENAI_API_KEY and "your_openai" not in settings.OPENAI_API_KEY:
-                logger.warning("Claude 失败，降级到 OpenAI")
-                content = await self._call_openai(prompt)
-        elif settings.OPENAI_API_KEY and "your_openai" not in settings.OPENAI_API_KEY:
-            content = await self._call_openai(prompt)
+        """生成养号微博文案（自动追加 #话题词#）。
+        优先通过 httpx 抓取话题热帖作为真实上下文；失败时降级到防幻觉约束 prompt。
+        """
+        # 1. 先用 httpx 抓话题热帖（轻量，无需 Playwright）
+        posts = await self._fetch_topic_posts(topic)
+        if posts:
+            logger.info(f"抓到 {len(posts)} 条话题热帖，使用真实上下文生成")
+            posts_text = "\n\n".join(f"【{i+1}】{p}" for i, p in enumerate(posts))
+            style_key = self.style if self.style in CONTEXT_PROMPT else "knowledge"
+            prompt = CONTEXT_PROMPT[style_key].format(topic=topic, posts=posts_text)
         else:
-            content = None
+            logger.info("未抓到话题热帖，降级到防幻觉约束 prompt")
+            prompt = STYLE_PROMPTS[self.style].format(
+                topic=topic,
+                desc=topic_desc or "微博热搜话题",
+            )
 
-        # 所有 AI provider 都失败时，使用本地安全模板兜底
+        # 2. 调 AI 生成文案
+        content = await self._call_ai(prompt)
+
+        # 3. 兜底 & 安全检查
         if content is None:
             logger.warning("所有 AI provider 均不可用，使用安全模板兜底")
             content = self._generate_fallback(topic)
-
-        # 安全检查：命中违禁词则回退到安全模板
         if self._is_risky(content):
-            logger.warning(f"[安全审查] 拦截高风险文案，改用安全模板")
+            logger.warning("[安全审查] 拦截高风险文案，改用安全模板")
             content = self._generate_fallback(topic)
 
         return self._append_topic_tag(content, topic)
 
+    async def _fetch_topic_posts(self, topic: str) -> list[str]:
+        """用 httpx 调微博搜索 JSON API 拿话题热帖，无需 Playwright。"""
+        if not self.cookies:
+            return []
+        try:
+            url = (
+                "https://m.weibo.cn/api/container/getIndex"
+                f"?containerid=100103type%3D1%26q%3D{quote(topic)}&page_type=searchall"
+            )
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
+                    "AppleWebKit/605.1.15 (KHTML, like Gecko) "
+                    "Version/17.0 Mobile/15E148 Safari/604.1"
+                ),
+                "X-Requested-With": "XMLHttpRequest",
+                "Referer": "https://m.weibo.cn/",
+            }
+            async with httpx.AsyncClient(timeout=8, cookies=self.cookies, headers=headers) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    logger.warning(f"话题搜索 API 返回 {resp.status_code}")
+                    return []
+                data = resp.json()
+
+            posts = []
+            for card in data.get("data", {}).get("cards", []):
+                for item in (card.get("card_group") or [card]):
+                    mblog = item.get("mblog") or {}
+                    text = mblog.get("raw_text") or mblog.get("text") or ""
+                    text = _re.sub(r"<[^>]+>", "", text).strip()
+                    if len(text) > 15:
+                        posts.append(text)
+                    if len(posts) >= 5:
+                        break
+                if len(posts) >= 5:
+                    break
+            return posts
+        except Exception as e:
+            logger.warning(f"话题热帖抓取失败: {e}")
+            return []
+
+    async def _call_ai(self, prompt: str) -> str | None:
+        """依次尝试 DeepSeek → Claude → OpenAI"""
+        if settings.DEEPSEEK_API_KEY:
+            content = await self._call_deepseek(prompt)
+            if content is not None:
+                return content
+            if settings.ANTHROPIC_API_KEY and "your_anthropic" not in settings.ANTHROPIC_API_KEY:
+                logger.warning("DeepSeek 失败，降级到 Claude")
+                content = await self._call_claude(prompt)
+                if content is not None:
+                    return content
+            if settings.OPENAI_API_KEY and "your_openai" not in settings.OPENAI_API_KEY:
+                logger.warning("Claude 也失败，降级到 OpenAI")
+                return await self._call_openai(prompt)
+        elif settings.ANTHROPIC_API_KEY and "your_anthropic" not in settings.ANTHROPIC_API_KEY:
+            content = await self._call_claude(prompt)
+            if content is not None:
+                return content
+            if settings.OPENAI_API_KEY and "your_openai" not in settings.OPENAI_API_KEY:
+                logger.warning("Claude 失败，降级到 OpenAI")
+                return await self._call_openai(prompt)
+        elif settings.OPENAI_API_KEY and "your_openai" not in settings.OPENAI_API_KEY:
+            return await self._call_openai(prompt)
+        return None
+
     @staticmethod
     def _is_risky(content: str) -> bool:
         return any(kw in content for kw in PUBLISH_BLOCK_KW)
-
-    async def _generate_remix(self, topic: str) -> str | None:
-        """抓取话题广场排名靠前的博文，用 AI 改写"""
-        try:
-            from urllib.parse import quote
-            from playwright.async_api import async_playwright
-            from app.database import async_session
-            from app.models.account import Account
-            from sqlalchemy import select
-            import json as _json
-
-            async with async_session() as session:
-                result = await session.execute(select(Account).where(Account.id == 1))
-                acc = result.scalar_one_or_none()
-                if not acc or not acc.cookies:
-                    return None
-                cookies = _json.loads(acc.cookies)
-
-            search_url = f"https://m.weibo.cn/search?containerid=100103type%3D1%26q%3D{quote(topic)}"
-            logger.info(f"抓取热门博文: {topic}")
-
-            async with async_playwright() as p:
-                browser = await p.chromium.launch(headless=True, args=["--no-sandbox"])
-                context = await browser.new_context(
-                    viewport={"width": 430, "height": 932},
-                    user_agent="Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-                    locale="zh-CN",
-                )
-                await context.add_cookies(cookies)
-                page = await context.new_page()
-                await page.goto(search_url, wait_until="networkidle", timeout=20000)
-                await __import__("asyncio").sleep(2)
-
-                # 提取前几条高赞博文文本
-                posts = await page.evaluate("""
-                    () => {
-                        const articles = document.querySelectorAll('article, .card-wrap, .m-wrap');
-                        const results = [];
-                        for (const a of articles) {
-                            const text = (a.innerText || '').trim();
-                            if (text.length > 20 && text.length < 500) {
-                                results.push(text);
-                            }
-                            if (results.length >= 5) break;
-                        }
-                        return results;
-                    }
-                """)
-                await browser.close()
-
-            if not posts:
-                logger.warning("未抓取到热门博文")
-                return None
-
-            # 用 AI 改写
-            source_text = "\n\n---\n\n".join(posts[:5])
-            remix_prompt = (
-                f"以下是微博话题「{topic}」下排名靠前的热门博文：\n\n{source_text}\n\n"
-                f"请借鉴以上爆款博文的表达方式、情绪节奏和结构，写一条全新的原创微博。要求：\n"
-                f"1. 观点和表述都是新的，不是照抄\n"
-                f"2. 保持和原博文类似的情绪风格\n"
-                f"3. 120字以内，适合微博传播\n"
-                f"4. 不要编造具体数据或细节\n"
-                f"直接输出微博文案，不要加前缀说明。"
-            )
-
-            if settings.DEEPSEEK_API_KEY:
-                result = await self._call_deepseek(remix_prompt)
-                if result is not None:
-                    return result
-                # DeepSeek 失败，尝试降级
-                if settings.ANTHROPIC_API_KEY and "your_anthropic" not in settings.ANTHROPIC_API_KEY:
-                    logger.info("remix DeepSeek 失败，降级到 Claude")
-                    return await self._call_claude(remix_prompt)
-            elif settings.ANTHROPIC_API_KEY and "your_anthropic" not in settings.ANTHROPIC_API_KEY:
-                return await self._call_claude(remix_prompt)
-            return None
-
-        except Exception as e:
-            logger.warning(f"remix 生成失败: {e}")
-            return None
 
     @staticmethod
     def _append_topic_tag(content: str, topic: str) -> str:
