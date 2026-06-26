@@ -160,6 +160,18 @@ async def _already_published_today(account_id: int) -> bool:
         return (result.scalar() or 0) > 0
 
 
+def _is_within_publish_hours() -> bool:
+    """检查当前北京时间是否在允许发布的时段内（8:00-23:59）。
+    防止深夜/凌晨触发消耗掉当天的发布额度。
+    """
+    from app.templates_env import to_local
+    now = to_local(datetime.datetime.utcnow())
+    if now.hour < 8:
+        logger.info(f"[feishu] 当前北京时间 {now.strftime('%H:%M')}，非发布时段（8:00 前），跳过")
+        return False
+    return True
+
+
 async def execute_feishu_publish(account_id: int = 2) -> dict:
     """
     完整流程：抓飞书群消息 → AI 排版 → 发两条微博
@@ -172,6 +184,10 @@ async def execute_feishu_publish(account_id: int = 2) -> dict:
     from app.services.publisher.weibo_web import WebWeiboPublisher
     from sqlalchemy import select
 
+    # 时段保护：8:00 前不发布，避免深夜/凌晨消耗当天额度
+    if not _is_within_publish_hours():
+        return {"success": True, "skipped": True, "error": "非发布时段（8:00 前）"}
+
     # 当天已发布过则跳过，避免补发触发重复发布
     if await _already_published_today(account_id):
         logger.info("[feishu] 今日已发布过，跳过本次触发")
@@ -182,8 +198,10 @@ async def execute_feishu_publish(account_id: int = 2) -> dict:
         return {"success": False, "error": "未配置 FEISHU_AI_CHAT_ID"}
 
     # 1. 抓今日飞书群消息
+    logger.info(f"[feishu] 开始抓取飞书群今日消息 (chat_id={chat_id[:8]}...) ...")
     messages = fetch_today_messages(chat_id)
     if not messages:
+        logger.info(f"[feishu] 今日飞书群暂无消息，跳过发布")
         return {"success": False, "error": "今日飞书群暂无消息"}
 
     # 2. AI 排版成两条微博

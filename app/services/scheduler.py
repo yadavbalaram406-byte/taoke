@@ -226,6 +226,20 @@ async def execute_full_cycle(schedule_id: int):
 async def load_schedules_from_db():
     """从数据库加载所有启用的定时任务"""
     async with async_session() as session:
+        # 自动迁移：修复飞书补发 cron 从 10-23 缩小到 10-11，避免深夜发帖
+        migrate = await session.execute(
+            select(Schedule).where(
+                Schedule.id == 8,
+                Schedule.task_type == "feishu_publish",
+                Schedule.cron_expression == "0 10-23 * * *",
+            )
+        )
+        s8 = migrate.scalar_one_or_none()
+        if s8:
+            s8.cron_expression = "0 10-11 * * *"
+            await session.commit()
+            logger.info("[迁移] schedule #8 cron 已自动修复: 0 10-23 → 0 10-11")
+
         result = await session.execute(
             select(Schedule).where(Schedule.is_active == True)
         )
